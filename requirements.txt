@@ -2,8 +2,8 @@ SpeechRecognition
 pyttsx3 
 pyaudio 
 streamlit
-langchain==0.1.0
-openai==1.0.0
+langchain
+openai
 PyPDF2==3.0.0
 tiktoken
 python-dotenv

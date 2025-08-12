@@ -1,5 +1,5 @@
-import re
-import PyPDF2
+import re # regular expresssion
+import PyPDF2 # for load pdf
 import os
 import io
 import tempfile
@@ -51,6 +51,7 @@ class ResumeAnalysisAgent:
             return ""
 
     def extract_text_from_file(self, file):
+        """Extract text from a file (PDF or TXT)"""
         if hasattr(file, 'name'):
             file_extension = file.name.split('.')[-1].lower()
         else:
@@ -211,19 +212,36 @@ class ResumeAnalysisAgent:
         }
 
     def analyze_resume(self, resume_file, role_requirements=None, custom_jd=None):
+        # Extract resume text
         self.resume_text = self.extract_text_from_file(resume_file)
+
+        # Save to temp file (optional but keeps vector store consistent)
         with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8') as tmp:
             tmp.write(self.resume_text)
             self.resume_file_path = tmp.name
+
+        # Create RAG vector store
         self.rag_vectorstore = self.create_rag_vector_store(self.resume_text)
+
+        # Get job description text & requirements
         if custom_jd:
             self.jd_text = self.extract_text_from_file(custom_jd)
-            self.extracted_skills = self.extract_skills_from_jd(self.jd_text)
-            self.analysis_result = self.semantic_skill_analysis(self.resume_text, role_requirements)
-            if self.analysis_result and "missing_skills" in self.analysis_result and self.analysis_result["missing_skills"]:
-                self.analyze_resume_weaknesses()
-                self.analysis_result["detailed_weaknesses"] = self.resume_weaknesses
-            return self.analysis_result
+            jd_skills = self.extract_skills_from_jd(self.jd_text)
+        else:
+            jd_skills = role_requirements or []
+
+        # Fallback if no skills extracted
+        if not jd_skills:
+            jd_skills = ["communication", "teamwork", "problem solving"]
+
+        # Skill analysis
+        self.analysis_result = self.semantic_skill_analysis(self.resume_text, jd_skills)
+
+        # Weaknesses & suggestions (always run)
+        self.analyze_resume_weaknesses()
+        self.analysis_result["detailed_weaknesses"] = getattr(self, "resume_weaknesses", [])
+
+        return self.analysis_result
 
     def ask_question(self, question):
         if not self.rag_vectorstore or not self.resume_text:
@@ -250,73 +268,71 @@ class ResumeAnalysisAgent:
         try:
             llm = ChatOpenAI(model="gpt-4o", api_key=self.api_key)
 
+            # Context for GPT
             context = f"""
-Resume Content:
-{self.resume_text[:2000]}...
+    Resume Content:
+    {self.resume_text[:2000]}...
 
-Skills to focus on: {', '.join(self.extracted_skills)}
+    Skills to focus on: {', '.join(self.extracted_skills)}
+    Strengths: {', '.join(self.analysis_result.get('strengths', []))}
+    Areas for improvement: {', '.join(self.analysis_result.get('missing_skills', []))}
+    """
 
-Strengths: {', '.join(self.analysis_result.get('strengths', []))}
-
-Areas for improvement: {', '.join(self.analysis_result.get('missing_skills', []))}
-"""
-
+            # Prompt with clearer instruction for real values
             prompt = f"""
-Generate {num_questions} personalized {difficulty.lower()} level interview
-questions for this candidate based on their resume and skills. Include only the following question types: {', '.join(question_types)}.
+    Generate {num_questions} personalized {difficulty.lower()} level interview questions
+    for this candidate based on their resume and skills.
 
-For each question:
-1. Clearly label the question type
-2. Make the question specific to their background and skills
-3. For coding questions, include a clear problem statement
+    Only include question types from this list: {', '.join(question_types)}.
 
-{context}
+    Return ONLY valid JSON in this exact format (do not include extra text):
+    [
+    {{"type": "<One type from the list above>", "question": "<A real interview question>"}}
+    ]
 
-Format the response as a list of tuples with the question type and the question itself.
-Each tuple should be in the format: ("Question Type", "Full Question Text")
-"""
+    Ensure:
+    - "type" must be one of the allowed types exactly.
+    - "question" must be a complete interview question.
+    - Do not output placeholder words like 'type' or 'question'.
+    - Do not include explanations or suggested approaches.
+    {context}
+    """
 
-            response = llm.invoke(prompt)
-            questions_text = response.content
+            # Get response from GPT
+            raw_response = llm.invoke(prompt).content.strip()
 
-            questions = []
-            pattern = r'\("([^"]+)",\s*"([^"]+)"\)'
-            matches = re.findall(pattern, questions_text, re.DOTALL)
+            # Try parsing JSON
+            try:
+                parsed_questions = json.loads(raw_response)
+            except json.JSONDecodeError:
+                # Fallback: extract using regex
+                pattern = r'"type"\s*:\s*"([^"]+)"\s*,\s*"question"\s*:\s*"([^"]+)"'
+                matches = re.findall(pattern, raw_response, re.DOTALL)
+                parsed_questions = [{"type": m[0], "question": m[1]} for m in matches]
 
-            for match in matches:
-                if len(match) == 2:
-                    question_type = match[0].strip()
-                    question = match[1].strip()
-                    for requested_type in question_types:
-                        if requested_type.lower() in question_type.lower():
-                            questions.append((requested_type, question))
-                            break
+            # Clean & validate
+            cleaned_questions = []
+            for q in parsed_questions:
+                q_type = q.get("type", "").strip()
+                q_text = q.get("question", "").strip()
 
-            if not questions:
-                lines = questions_text.split('\n')
-                current_type = None
-                current_question = ""
+                if q_type and q_text and q_type.lower() in [t.lower() for t in question_types]:
+                    cleaned_questions.append({"type": q_type, "question": q_text})
 
-                for line in lines:
-                    line = line.strip()
-                    if any(t.lower() in line.lower() for t in question_types) and not current_question:
-                        current_type = next((t for t in question_types if t.lower() in line.lower()), None)
-                        if ":" in line:
-                            current_question = line.split(":", 1)[1].strip()
+            # Fallback if nothing valid
+            if not cleaned_questions:
+                cleaned_questions = [
+                    {"type": t, "question": f"Tell me about your experience with {t}."}
+                    for t in question_types
+                ]
 
-                    elif current_type and line:
-                        current_question += " " + line
-
-                    elif current_type and current_question:
-                        questions.append((current_type, current_question))
-                        current_type = None
-                        current_question = ""
-
-            return questions[:num_questions]
+            return cleaned_questions[:num_questions]
 
         except Exception as e:
             print(f"Error generating interview questions: {e}")
             return []
+
+
 
     def improve_resume(self, improvement_areas, target_role=""):
         """Generate suggestions to improve the resume"""
