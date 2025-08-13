@@ -7,27 +7,42 @@ st.set_page_config(
 )
 
 import ui
-
 from agents import ResumeAnalysisAgent
-
 import atexit
 
 ROLE_REQUIREMENTS = {
     "AI/ML Engineer": [ 
-        "python" , "pyTorch" , "tensorFlow" , "Machine Learning" , "Deep Learning" , 
-        "MLOps" , "Scikit-Learn" , "NLP" , "Computer Vision" , "Reinforcement Learning",
-        "Hugging Face" , "Data Engineering" , "Feature Engineering" , "AutoML"
+        "Python", "PyTorch", "TensorFlow", "Machine Learning", "Deep Learning", "LangChain",
+        "MLOps", "Scikit-learn", "Natural Language Processing (NLP)", "Computer Vision", "Hugging Face", 
+        "Feature Engineering",
+        "SQL", "Data Preprocessing", "Model Deployment", "Docker", "Kubernetes",
+        "AWS SageMaker", "Azure ML", "Git", "Data Analysis",
+        "Transfer Learning", "Hyperparameter Tuning",
+        "Model Monitoring", "Experiment Tracking (MLflow, DVC)"
+
         ],
-    "Frontend Enginner":[
-        "React" , "Vue" , "Angular" , "HTML5" , "CSS3", "JavaScript" , "typescript" , 
-        "Next.js" , "Svelte" , "Bootstrap" , "Tailwind CSS" , "GraphQL" , "Redux",
-        "WebAssembly" , "Three.js" , "Performance Optimization"
-    ],
-    "Backend Engineer":[
-        "python" , "Java" , "Node.js" , "REST APIs" , "Cloud services" , 
-        "Docker" , "GraphQL" , "Microservices" , "gRPC"  , "spring Boot" , "Flask",
-        "FastAPI" , "SQL & NoSQL Databases" , "Redis" , "RabbitMQ" , "CI/CD"
-    ]
+    "Frontend Engineer": [
+        "React", "Vue", "Angular", "HTML5", "CSS3", "JavaScript", "TypeScript",
+        "Next.js", "Svelte", "Bootstrap", "Tailwind CSS", "GraphQL", "Redux",
+        "WebAssembly", "Three.js", "Performance Optimization", "REST APIs",
+        "Webpack", "Vite", "Responsive Design", "UI/UX Principles", "Testing (Jest, Cypress)"
+],
+    "Backend Engineer": [
+        "Python", "Java", "Node.js", "Go", "REST APIs", "GraphQL", "gRPC",
+        "Spring Boot", "Flask", "FastAPI", "Express.js", "Django",
+        "SQL Databases", "NoSQL Databases", "PostgreSQL", "MySQL", "MongoDB",
+        "Redis", "RabbitMQ", "Kafka", "Microservices", "Docker", "Kubernetes",
+        "Cloud Services (AWS, GCP, Azure)", "CI/CD", "API Security", "Scalability & Performance Optimization"
+],
+    "Full Stack Developer": [
+        "HTML5", "CSS3", "JavaScript", "TypeScript", "React", "Vue", "Angular",
+        "Next.js", "Node.js", "Express.js", "Python", "Java", "Flask", "FastAPI",
+        "Spring Boot", "SQL Databases", "NoSQL Databases", "PostgreSQL", "MySQL", "MongoDB",
+        "REST APIs", "GraphQL", "Docker", "Kubernetes", "Microservices",
+        "Cloud Services (AWS, GCP, Azure)", "Git", "CI/CD",
+        "Responsive Design", "UI/UX Principles", "Testing (Jest, Cypress, PyTest)",
+        "Performance Optimization", "API Security", "Version Control"
+]
 }
 
 if 'resume_agent' not in st.session_state:
@@ -41,7 +56,7 @@ if "analysis_result" not in st.session_state:
 
 
 def setup_agent(config)    :
-    """set up the resume analysis agent eith the provided configuration"""
+    """set up the resume analysis agent with the provided configuration"""
     
     
     if not config["openai_api_key"]:
@@ -55,7 +70,8 @@ def setup_agent(config)    :
         st.session_state.resume_agent.api_key = config["openai_api_key"]
         
     return st.session_state.resume_agent
-
+#     In Streamlit, every time the user clicks something, uploads a file, or changes input, the script reruns from the top.
+# Without st.session_state, your ResumeAnalysisAgent would be created again and again — losing any previous data or state.
 def analyze_resume(agent, resume_file, role, custom_jd):
     if not resume_file:
         st.error("Please upload a resume.")
@@ -133,7 +149,7 @@ def main():
     ui.setup_page()
     ui.display_header()
     
-    config = ui.setup_sidebar()
+    config = ui.setup_sidebar() # config = openai api key
     agent  = setup_agent(config)
     
     tabs  = ui.create_tabs()

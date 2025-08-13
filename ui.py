@@ -41,7 +41,7 @@ def display_header():
     st.markdown("""
     **AI-powered resume analysis and interview preparation tool**
     
-    Upload a resume, select a target role, and get personalized feedback to improve your job application.
+    Upload a resume, select a target role or paste job description, and get personalized feedback to improve your job application.
     """)
     st.divider()
 
@@ -49,7 +49,7 @@ def setup_sidebar() -> Dict:
     """Set up the sidebar configuration options"""
     with st.sidebar:
         st.header("Configuration")
-        api_key = st.text_input("OpenAI API Key", type="password", help="Required for all AI functionality")
+        api_key = st.text_input("Enter Your OpenAI API Key", type="password", help="Required for all AI functionality")
         
         st.markdown("---")
         st.markdown("""
