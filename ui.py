@@ -37,7 +37,7 @@ def setup_page():
 
 def display_header():
     """Display the application header"""
-    st.title("🚀 Euron Recruitment Agent")
+    st.title("🚀Recruitment Agent")
     st.markdown("""
     **AI-powered resume analysis and interview preparation tool**
     
@@ -242,7 +242,9 @@ def interview_questions_section(has_resume: bool, generate_questions_func: Calla
             
             if questions:
                 st.markdown("### Generated Questions")
-                for i, (q_type, question) in enumerate(questions, 1):
+                for i, q in enumerate(questions, 1): # FIX: Iterate over dictionaries, not tuples
+                    q_type = q.get("type", "N/A")
+                    question = q.get("question", "N/A")
                     with st.expander(f"{i}. {question}"):
                         st.markdown(f"**Type:** {q_type}")
                         st.markdown("**Suggested Approach:**")

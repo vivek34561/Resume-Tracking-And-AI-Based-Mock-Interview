@@ -93,7 +93,7 @@ class ResumeAnalysisAgent:
             return []
         weaknesses = []
         for skill in self.analysis_result.get("missing_skills", []):
-            llm = ChatOpenAI(model='gpt-4o', api_key=self.api_key)
+            llm = ChatOpenAI(model='gpt-4o-mini', api_key=self.api_key)
             prompt = f"""Analyze why the resume is weak in demonstrating proficiency in "{skill}".
 
             For your analysis, consider:
@@ -139,7 +139,7 @@ class ResumeAnalysisAgent:
 
     def extract_skills_from_jd(self, jd_text):
         try:
-            llm = ChatOpenAI(model="gpt-4o", api_key=self.api_key)
+            llm = ChatOpenAI(model="gpt-4o-mini", api_key=self.api_key)
             prompt = f"""
             Extract a comprehensive list of technical skills, technologies, and competencies required from this job description.
             Format the output as a Python list of strings. Only include the list, nothing else.
@@ -178,7 +178,7 @@ class ResumeAnalysisAgent:
         vectorstore = self.create_vector_store(resume_text)
         retriever = vectorstore.as_retriever()
         qa_chain = RetrievalQA.from_chain_type(
-            llm=ChatOpenAI(model='gpt-4o', api_key=self.api_key),
+            llm=ChatOpenAI(model='gpt-4o-mini', api_key=self.api_key),
             retriever=retriever,
             return_source_documents=False
         )
@@ -233,7 +233,7 @@ class ResumeAnalysisAgent:
         # Fallback if no skills extracted
         if not jd_skills:
             jd_skills = ["communication", "teamwork", "problem solving"]
-
+        self.extracted_skills = jd_skills
         # Skill analysis
         self.analysis_result = self.semantic_skill_analysis(self.resume_text, jd_skills)
 
@@ -248,7 +248,7 @@ class ResumeAnalysisAgent:
             return "Please analyze a resume first."
         retriever = self.rag_vectorstore.as_retriever(search_kwargs={"k": 3})
         qa_chain = RetrievalQA.from_chain_type(
-            llm=ChatOpenAI(model="gpt-4o", api_key=self.api_key),
+            llm=ChatOpenAI(model="gpt-4o-mini", api_key=self.api_key),
             chain_type="stuff",
             retriever=retriever,
             return_source_documents=False,
@@ -266,7 +266,7 @@ class ResumeAnalysisAgent:
             return []
 
         try:
-            llm = ChatOpenAI(model="gpt-4o", api_key=self.api_key)
+            llm = ChatOpenAI(model="gpt-4o-mini", api_key=self.api_key)
 
             # Context for GPT
             context = f"""
@@ -378,7 +378,7 @@ class ResumeAnalysisAgent:
             remaining_areas = [area for area in improvement_areas if area not in improvements]
 
             if remaining_areas:
-                llm = ChatOpenAI(model="gpt-4o", api_key=self.api_key)
+                llm = ChatOpenAI(model="gpt-4o-mini", api_key=self.api_key)
 
                 weaknesses_text = ""
                 if self.resume_weaknesses:
@@ -502,7 +502,7 @@ Focus particularly on addressing the resume weaknesses identified.
                     if 'example' in weakness and weakness['example']:
                         improvement_examples += f"For {skill_name}: {weakness['example']}\n\n"
 
-            llm = ChatOpenAI(model="gpt-4o", temperature=0.7, api_key=self.api_key)
+            llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7, api_key=self.api_key)
 
             jd_context = ""
             if self.jd_text:

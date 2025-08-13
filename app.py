@@ -1,7 +1,7 @@
 import streamlit as st
 
 st.set_page_config(
-    page_title = "Euron Recruitment Agent",
+    page_title = "Recruitment Agent",
     page_icon = "🚀",
     layout  = "wide"
 )

@@ -10,4 +10,6 @@ python-dotenv
 streamlit
 langchain
 faiss-cpu
-
+sentence-transformers
+langchain_groq
+langchain_huggingface
