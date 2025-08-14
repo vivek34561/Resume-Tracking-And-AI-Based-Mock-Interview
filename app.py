@@ -12,12 +12,11 @@ import atexit
 
 ROLE_REQUIREMENTS = {
     "AI/ML Engineer": [ 
-        "Python", "PyTorch", "TensorFlow", "Machine Learning", "Deep Learning", "LangChain",
-        "MLOps", "Scikit-learn", "Natural Language Processing (NLP)", "Computer Vision", "Hugging Face", 
+        "Python", "TensorFlow", "Machine Learning", "Deep Learning", "LangChain",
+        "MLOps", "Scikit-learn", "Natural Language Processing (NLP)", "Hugging Face", 
         "Feature Engineering",
-        "SQL", "Data Preprocessing", "Model Deployment", "Docker", "Kubernetes",
-        "AWS SageMaker", "Azure ML", "Git", "Data Analysis",
-        "Transfer Learning", "Hyperparameter Tuning",
+        "SQL", "Data Preprocessing", "Model Deployment", "Docker",
+        "AWS SageMaker", "Git", "Data Analysis", "Hyperparameter Tuning",
         "Model Monitoring", "Experiment Tracking (MLflow, DVC)"
 
         ],
@@ -42,7 +41,18 @@ ROLE_REQUIREMENTS = {
         "Cloud Services (AWS, GCP, Azure)", "Git", "CI/CD",
         "Responsive Design", "UI/UX Principles", "Testing (Jest, Cypress, PyTest)",
         "Performance Optimization", "API Security", "Version Control"
-]
+],
+    "Data Scientist": [
+    "Python",  "SQL", "Machine Learning", "Deep Learning", "Scikit-learn", 
+    "TensorFlow/PyTorch", "Natural Language Processing (NLP)/Computer Vision", 
+    "Data Visualization (Matplotlib, Seaborn, Plotly)", 
+    "Pandas", "NumPy", "Data Preprocessing", "Feature Engineering",   
+    "Model Deployment", "Docker", "Git", "Cloud Platforms (AWS, Azure, GCP)", 
+    "Model Evaluation", "Experiment Tracking (MLflow, Weights & Biases)", 
+    "Power BI/Tableau"
+],
+    
+    
 }
 
 if 'resume_agent' not in st.session_state:

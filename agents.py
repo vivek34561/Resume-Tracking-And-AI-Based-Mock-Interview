@@ -187,7 +187,7 @@ class ResumeAnalysisAgent:
         missing_skills = []
         total_score = 0
         with ThreadPoolExecutor(max_workers=5) as executor:
-            results = list(executor.map(lambda skill: self.analyze_skill(qa_chain, skill), skills))
+            results = list(executor.map(lambda skill: self.analyze_skill(qa_chain, skill), skills)) 
         for skill, score, reasoning in results:
             skill_scores[skill] = score
             skill_reasoning[skill] = reasoning
@@ -232,7 +232,7 @@ class ResumeAnalysisAgent:
 
         # Fallback if no skills extracted
         if not jd_skills:
-            jd_skills = ["communication", "teamwork", "problem solving"]
+            jd_skills = ["teamwork"]
         self.extracted_skills = jd_skills
         # Skill analysis
         self.analysis_result = self.semantic_skill_analysis(self.resume_text, jd_skills)
