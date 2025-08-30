@@ -37,7 +37,7 @@ def setup_page():
 
 def display_header():
     """Display the application header"""
-    st.title("🚀Recruitment Agent")
+    st.title("🚀AI-Powered Interview prep tool") 
     st.markdown("""
     **AI-powered resume analysis and interview preparation tool**
     
@@ -78,7 +78,9 @@ def create_tabs() -> List:
         "❓ Resume Q&A",
         "💡 Interview Questions",
         "🔧 Resume Improvements",
-        "✨ Improved Resume"
+        "✨ Improved Resume",
+        "🎤 Mock Interview",
+        "🔍 Job Search" 
     ])
 
 def role_selection_section(role_requirements: Dict) -> Tuple[str, Optional[str]]:
@@ -336,3 +338,210 @@ def improved_resume_section(has_resume: bool, get_improved_resume_func: Callable
                 st.error(improved_resume)
     else:
         st.warning("Please upload and analyze a resume first")
+        
+
+
+def mock_interview_section(
+    has_resume: bool,
+    start_interview_func: Callable,
+    play_tts_func: Callable[[str], bytes],
+    process_audio_answer_func: Callable,
+):
+    st.subheader("Interactive Mock Interview (10 Questions)")
+    st.caption("We speak each question. You record your answer, we transcribe and score it across Communication, Technical Knowledge, and Problem Solving. At the end you get a summary with strengths and weaknesses.")
+
+    if not has_resume:
+        st.warning("Please upload and analyze a resume first")
+        return
+
+    inter = st.session_state.interview
+
+    if not inter['started'] and not inter['completed']:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            q_types = st.multiselect(
+                "Question Types",
+                options=["Technical", "Behavioral", "Situational", "System Design", "Problem Solving"],
+                default=["Technical", "Behavioral", "Problem Solving"],
+            )
+        with c2:
+            diff = st.selectbox("Difficulty", ["Easy", "Medium", "Hard", "Mixed"], index=2)
+        with c3:
+            num = st.number_input("Questions", min_value=5, max_value=15, value=10, step=1)
+        if st.button("Start Mock Interview", type="primary"):
+            start_interview_func(q_types, diff, int(num))
+            st.rerun()
+        return
+
+    # Interview running
+    if inter['started'] and not inter['completed']:
+        q_idx = inter['current']
+        total = len(inter['questions'])
+        st.progress(q_idx / total if total else 0.0, text=f"Question {q_idx+1} of {total}")
+        question = inter['questions'][q_idx]
+        st.markdown(f"### Q{q_idx+1}. {question}")
+
+        # TTS playback
+        if st.button("▶️ Play question"):
+            try:
+                audio_bytes = play_tts_func(question)
+                st.audio(audio_bytes, format='audio/mp3')
+            except Exception as e:
+                st.error(f"TTS error: {e}")
+
+        # Record answer (requires Streamlit >= 1.30 with st.audio_input)
+        audio = st.audio_input("Record your answer")
+        submit_col, skip_col = st.columns([3,1])
+        with submit_col:
+            if st.button("Submit Answer", disabled=(audio is None), type="primary"):
+                if audio is None:
+                    st.warning("Please record your answer first.")
+                else:
+                    process_audio_answer_func(audio)
+                    st.rerun()
+        with skip_col:
+            if st.button("Skip"):
+                # Append blanks to keep alignment
+                inter['answers'].append(None)
+                inter['transcripts'].append("")
+                inter['per_q_scores'].append({"communication":0,"technical_knowledge":0,"problem_solving":0,"overall":0,"strengths":[],"weaknesses":[],"feedback":""})
+                inter['current'] += 1
+                if inter['current'] >= len(inter['questions']):
+                    inter['completed'] = True
+                st.rerun()
+
+        # If we already have a score for previous question, show it quickly
+        if inter['per_q_scores'] and q_idx > 0:
+            last = inter['per_q_scores'][q_idx-1]
+            with st.expander("Previous question feedback"):
+                cols = st.columns(4)
+                cols[0].metric("Communication", last.get('communication',0))
+                cols[1].metric("Technical", last.get('technical_knowledge',0))
+                cols[2].metric("Problem Solving", last.get('problem_solving',0))
+                cols[3].metric("Overall", last.get('overall',0))
+                st.markdown(f"**Feedback:** {last.get('feedback','')}")
+                if last.get('strengths'):
+                    st.markdown("**Strengths:** " + ", ".join(last['strengths']))
+                if last.get('weaknesses'):
+                    st.markdown("**Weaknesses:** " + ", ".join(last['weaknesses']))
+        return
+
+    # Completed
+    if inter['completed']:
+        st.success("Mock interview completed!")
+        summary = inter.get('summary')
+        if summary:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Overall", summary['overall'])
+            c2.metric("Communication", summary['communication'])
+            c3.metric("Technical", summary['technical_knowledge'])
+            c4.metric("Problem Solving", summary['problem_solving'])
+            st.progress(summary['overall'] / 100.0)
+
+            colA, colB = st.columns(2)
+            with colA:
+                st.subheader("Top Strengths")
+                if summary['strengths']:
+                    for s in summary['strengths']:
+                        st.markdown(f"- {s}")
+                else:
+                    st.write("—")
+            with colB:
+                st.subheader("Key Weaknesses")
+                if summary['weaknesses']:
+                    for w in summary['weaknesses']:
+                        st.markdown(f"- {w}")
+                else:
+                    st.write("—")
+
+        # Detailed per-question review
+        st.markdown("### Per-Question Review")
+        for i, (q, sc, tr) in enumerate(zip(inter['questions'], inter['per_q_scores'], inter['transcripts'])):
+            with st.expander(f"Q{i+1}: {q}"):
+                st.markdown(f"**Your answer (transcript):** {tr if tr else '—'}")
+                cols = st.columns(4)
+                cols[0].metric("Communication", sc.get('communication',0))
+                cols[1].metric("Technical", sc.get('technical_knowledge',0))
+                cols[2].metric("Problem Solving", sc.get('problem_solving',0))
+                cols[3].metric("Overall", sc.get('overall',0))
+                st.markdown(f"**Feedback:** {sc.get('feedback','')}")
+                if sc.get('strengths'):
+                    st.caption("Strengths: " + ", ".join(sc['strengths']))
+                if sc.get('weaknesses'):
+                    st.caption("Weaknesses: " + ", ".join(sc['weaknesses']))
+
+        if st.button("Restart Interview"):
+            inter.update({
+                'started': False,
+                'completed': False,
+                'current': 0,
+                'questions': [],
+                'answers': [],
+                'transcripts': [],
+                'per_q_scores': [],
+                'summary': None,
+            })
+            st.rerun()
+
+
+
+import streamlit as st
+from agents import JobAgent
+
+def job_search_ui():
+    st.title("🌍 Recruitment Agent - Job Search")
+
+    # Initialize JobAgent
+    agent = JobAgent()
+
+    # Select platform (future proof, currently Adzuna only)
+    platform = st.selectbox("Select Job Platform", ["Adzuna" , "Indeed"])
+
+    # Job role input
+    query = st.selectbox(
+        "Select Role",
+        [
+            "Data Analyst", "Data Scientist", "Software Engineer", "ML Engineer",
+            "Backend Developer", "Frontend Developer", "Full Stack Developer",
+            "AI Engineer", "Business Analyst", "DevOps Engineer", "Cloud Engineer",
+            "Cybersecurity Specialist", "Product Manager", "QA Engineer"
+        ]
+    )
+
+    # Location input
+    location = st.selectbox(
+    "Enter Location (optional)", 
+    ["India" , "Delhi", "Bengaluru", "Mumbai", "Hyderabad", "Chennai", "Pune", "Kolkata"])
+
+
+    # Country selection
+    country = st.selectbox("Select Country", ["in", "us", "gb", "ca", "au"])
+
+    # Experience filter
+    experience = st.slider("Years of Experience (optional)", 0, 15, 0)
+
+    # Number of results
+    num_results = st.slider("Number of Results", 5, 30, 10)
+
+    # Search button
+    if st.button("🔍 Search Jobs"):
+        with st.spinner("Fetching jobs..."):
+            jobs = agent.search_jobs(
+                query=query,
+                location=location,
+                platform=platform.lower(),
+                experience=experience if experience > 0 else None,
+                num_results=num_results,
+                country=country
+            )
+
+        # Display results
+        if jobs and "error" not in jobs[0]:
+            for job in jobs:
+                st.markdown(f"### {job['title']}")
+                st.write(f"**Company:** {job['company']}")
+                st.write(f"**Location:** {job['location']}")
+                st.markdown(f"[Apply Here]({job['link']})", unsafe_allow_html=True)
+                st.markdown("---")
+        else:
+            st.error(jobs[0].get("error", "No jobs found."))

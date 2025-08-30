@@ -9,15 +9,21 @@ st.set_page_config(
 import ui
 from agents import ResumeAnalysisAgent
 import atexit
+import io
+import json
+
+try:
+    # OpenAI SDK v1 style
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
 
 ROLE_REQUIREMENTS = {
     "AI/ML Engineer": [ 
         "Python", "TensorFlow", "Machine Learning", "Deep Learning", "LangChain",
         "MLOps", "Scikit-learn", "Natural Language Processing (NLP)", "Hugging Face", 
-        "Feature Engineering",
-        "SQL", "Data Preprocessing", "Model Deployment", "Docker",
-        "AWS SageMaker", "Git", "Data Analysis", "Hyperparameter Tuning",
-        "Model Monitoring", "Experiment Tracking (MLflow, DVC)"
+        "SQL", "Git"
+        ,"Experiment Tracking (MLflow, DVC)"
 
         ],
     "Frontend Engineer": [
@@ -62,6 +68,22 @@ if 'resume_analyzed' not in st.session_state:
     
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
+
+# NEW: store API key for speech funcs
+if 'openai_api_key' not in st.session_state:
+    st.session_state.openai_api_key = None
+# NEW: mock interview state
+if 'interview' not in st.session_state:
+    st.session_state.interview = {
+        'started': False,
+        'completed': False,
+        'current': 0,
+        'questions': [],
+        'answers': [],
+        'transcripts': [],
+        'per_q_scores': [],  # list of dicts per question
+        'summary': None,
+    }    
     
 
 
@@ -72,7 +94,7 @@ def setup_agent(config)    :
     if not config["openai_api_key"]:
         st.error("Please enter your OpenAI API Key in the sidebar.")
         st.stop() 
-    
+    st.session_state.openai_api_key = config["openai_api_key"]
     if st.session_state.resume_agent is None:
         st.session_state.resume_agent = ResumeAnalysisAgent(api_key = config["openai_api_key"])
     
@@ -146,9 +168,163 @@ def get_improved_resume(agent , target_role , highlight_skills)    :
     except Exception as e:
         st.error(f"Error creating resume:{e}")    
         return "Error generating improved resume."
+
+
+# NEW: Mock Interview helpers
+# ==========================
+
+def _get_client(api_key: str):
+    if OpenAI is None:
+        raise RuntimeError("openai package not found. Install with: pip install openai>=1.0.0")
+    return OpenAI(api_key=api_key)
+
+
+def synthesize_speech(text: str, api_key: str) -> bytes:
+    """Use OpenAI TTS to synthesize the given text and return mp3 bytes."""
+    client = _get_client(api_key)
+    # model names may vary; gpt-4o-mini-tts is widely available
+    resp = client.audio.speech.create(
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+        input=text,
+        response_format="mp3",
+    )
+    # SDK returns bytes-like object
+    audio_bytes = resp.read() if hasattr(resp, 'read') else resp
+    return audio_bytes
+
+
+def transcribe_audio(audio_file, api_key: str) -> str:
+    """Transcribe user audio (UploadedFile) to text using Whisper-1."""
+    client = _get_client(api_key)
+    # audio_file is a Streamlit UploadedFile; get bytes and name
+    data = audio_file.read()
+    # reset pointer for any future reads
+    audio_file.seek(0)
+    # Best-effort mime; Streamlit returns .wav by default for audio_input
+    fname = getattr(audio_file, 'name', 'answer.wav')
+    mime = getattr(audio_file, 'type', 'audio/wav')
+    file_tuple = (fname, io.BytesIO(data), mime)
+    tr = client.audio.transcriptions.create(
+        model="whisper-1",
+        file=file_tuple,
+        response_format="json"
+    )
+    # SDK returns object with .text or dict
+    text = getattr(tr, 'text', None)
+    if text is None:
+        # fallback if dict-like
+        try:
+            text = tr["text"]
+        except Exception:
+            text = ""
+    return text or ""
+
+
+def score_answer(question: str, transcript: str, api_key: str) -> dict:
+    """Score an answer across categories using an LLM and return a JSON dict."""
+    client = _get_client(api_key)
+    sys = (
+        "You are an expert technical interviewer. Score the candidate's single answer strictly. "
+        "Return ONLY compact JSON with keys: communication (0-10), technical_knowledge (0-10), "
+        "problem_solving (0-10), overall (0-100), strengths (array of short phrases), "
+        "weaknesses (array of short phrases), feedback (<=60 words)."
+    )
+    user = (
+        f"Question: {question}\n\n"
+        f"Candidate answer (transcript): {transcript}"
+    )
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": sys},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.2,
+    )
+    content = resp.choices[0].message.content
+    try:
+        data = json.loads(content)
+    except Exception:
+        data = {
+            "communication": 5,
+            "technical_knowledge": 5,
+            "problem_solving": 5,
+            "overall": 50,
+            "strengths": [],
+            "weaknesses": [],
+            "feedback": "",
+        }
+    return data
+
+
+def start_mock_interview(agent: ResumeAnalysisAgent, question_types, difficulty, num_questions: int = 10):
+    with st.spinner("Preparing your personalized interview..."):
+        qs = agent.generate_interview_questions(question_types, difficulty, num_questions)
+        # Normalize to list of question strings
+        questions = []
+        for q in qs:
+            if isinstance(q, dict):
+                questions.append(q.get("question") or q.get("text") or str(q))
+            else:
+                questions.append(str(q))
+        st.session_state.interview = {
+            'started': True,
+            'completed': False,
+            'current': 0,
+            'questions': questions[:num_questions],
+            'answers': [],
+            'transcripts': [],
+            'per_q_scores': [],
+            'summary': None,
+        }
+
+
+def process_answer(audio_file):
+    """Handle one answer: STT -> scoring -> advance pointer."""
+    api_key = st.session_state.openai_api_key
+    idx = st.session_state.interview['current']
+    question = st.session_state.interview['questions'][idx]
+
+    transcript = transcribe_audio(audio_file, api_key)
+    scores = score_answer(question, transcript, api_key)
+
+    st.session_state.interview['answers'].append(audio_file)
+    st.session_state.interview['transcripts'].append(transcript)
+    st.session_state.interview['per_q_scores'].append(scores)
+
+    st.session_state.interview['current'] += 1
+    if st.session_state.interview['current'] >= len(st.session_state.interview['questions']):
+        # finalize summary
+        perq = st.session_state.interview['per_q_scores']
+        if perq:
+            comm = sum(p.get('communication', 0) for p in perq) / len(perq)
+            tech = sum(p.get('technical_knowledge', 0) for p in perq) / len(perq)
+            prob = sum(p.get('problem_solving', 0) for p in perq) / len(perq)
+            overall = sum(p.get('overall', 0) for p in perq) / len(perq)
+            strengths = []
+            weaknesses = []
+            for p in perq:
+                strengths += p.get('strengths', [])
+                weaknesses += p.get('weaknesses', [])
+            # keep top 5 unique
+            strengths = list(dict.fromkeys(strengths))[:5]
+            weaknesses = list(dict.fromkeys(weaknesses))[:5]
+            st.session_state.interview['summary'] = {
+                'communication': round(comm, 1),
+                'technical_knowledge': round(tech, 1),
+                'problem_solving': round(prob, 1),
+                'overall': round(overall, 1),
+                'strengths': strengths,
+                'weaknesses': weaknesses,
+            }
+        st.session_state.interview['completed'] = True
+
+
     
     
-def cleanup()    :
+def cleanup():
     """clean up resources when the app exits"""
     if st.session_state.resume_agent:
         st.session_state.resume_agent.cleanup()
@@ -206,7 +382,7 @@ def main():
             st.warning("please upload and analyze a resume first in the 'Resume Analysis' tab.")    
             
     
-    with tabs[3]        :
+    with tabs[3]  :
         if st.session_state.resume_analyzed and st.session_state.resume_agent:
             ui.resume_improvement_section(
                 has_resume = True,
@@ -217,7 +393,7 @@ def main():
             
     
     
-    with tabs[4]        :
+    with tabs[4] :
         if st.session_state.resume_analyzed and st.session_state.resume_agent:
             ui.improved_resume_section(
             has_resume=True,
@@ -225,7 +401,23 @@ def main():
             )
         else:
             st.warning("Please upload and analyze a resume first in the 'Resume Analysis tab.")    
-            
+    
+    
+    with tabs[5] :
+        if st.session_state.resume_analyzed and st.session_state.resume_agent:
+            ui.mock_interview_section(
+                has_resume=True,
+                start_interview_func=lambda types, diff, num: start_mock_interview(st.session_state.resume_agent, types, diff, num),
+                play_tts_func=lambda text: synthesize_speech(text, st.session_state.openai_api_key),
+                process_audio_answer_func=lambda audio_file: process_answer(audio_file),
+            )
+        else:
+            st.warning("Please upload and analyze a resume first in the 'Resume Analysis' tab.")
+
+    with tabs[6]:   # Job Search tab
+        ui.job_search_ui() 
+
+  
 
 if __name__ == "__main__"            :
     main()

@@ -9,8 +9,10 @@ from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from concurrent.futures import ThreadPoolExecutor
-
+import requests
+JOOBLE_API_KEY = os.getenv("JOOBLE_API_KEY")
 class ResumeAnalysisAgent:
+    
     def __init__(self, api_key, cutoff_score=75):
         self.api_key = api_key
         self.cutoff_score = cutoff_score
@@ -559,3 +561,54 @@ Format the resume in a modern, clean style with clear section headings.
                 os.unlink(self.improved_resume_path)
         except Exception as e:
             print(f"Error cleaning up temporary files: {e}")
+            
+    
+
+# store your key safely (better via env variable)
+
+
+    
+
+import requests
+
+class JobAgent:
+    def __init__(self):
+        # Adzuna API credentials (get from https://developer.adzuna.com/)
+        self.app_id = "aea2688c"
+        self.app_key = "3d681c98182447e843823a9c9c2d14ee"
+        self.base_url = "https://api.adzuna.com/v1/api/jobs"
+
+    def search_jobs(self, query, location=None, platform="adzuna", experience=None, num_results=10, country="gb"):
+    
+
+        url = f"{self.base_url}/{country}/search/1"
+        params = {
+            "app_id": self.app_id,
+            "app_key": self.app_key,
+            "results_per_page": num_results,
+            "what": query
+        }
+
+        if location:
+            params["where"] = location
+        if experience:
+            params["experience"] = str(experience)  # Adzuna has `experience` filter in premium
+
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            jobs = []
+            if "results" in data:
+                for job in data["results"][:num_results]:
+                    jobs.append({
+                        "title": job.get("title"),
+                        "company": job.get("company", {}).get("display_name"),
+                        "location": job.get("location", {}).get("display_name"),
+                        "link": job.get("redirect_url")
+                    })
+            return jobs if jobs else [{"error": "No jobs found"}]
+
+        except Exception as e:
+            return [{"error": str(e)}]
