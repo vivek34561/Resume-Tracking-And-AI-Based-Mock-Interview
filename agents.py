@@ -35,7 +35,9 @@ class ResumeAnalysisAgent:
                 reader = PyPDF2.PdfReader(pdf_file)
             text = ""
             for page in reader.pages:
-                text += page.extract_text()
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text
             return text
         except Exception as e:
             print(f"Error in extracting text from PDF: {e}")
@@ -53,26 +55,24 @@ class ResumeAnalysisAgent:
             return ""
 
     def extract_text_from_file(self, file):
-        """Extract text from a file (PDF or TXT)"""
         if hasattr(file, 'name'):
-            file_extension = file.name.split('.')[-1].lower()
+            ext = file.name.split('.')[-1].lower()
         else:
-            file_extension = file.split('.')[-1].lower()
-        if file_extension == 'pdf':
+            ext = str(file).split('.')[-1].lower()
+        if ext == 'pdf':
             return self.extract_text_from_pdf(file)
-        elif file_extension == 'txt':
+        elif ext == 'txt':
             return self.extract_text_from_txt(file)
         else:
-            print(f'Unsupported file extension: {file_extension}')
+            print(f"Unsupported file extension: {ext}")
             return ""
 
+    # ----------------------------
+    # Vector Stores
+    # ----------------------------
     def create_rag_vector_store(self, text):
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            length_function=len,
-        )
-        chunks = text_splitter.split_text(text)
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = splitter.split_text(text)
         embeddings = OpenAIEmbeddings(api_key=self.api_key)
         vectorstore = FAISS.from_texts(chunks, embeddings)
         return vectorstore
@@ -82,6 +82,41 @@ class ResumeAnalysisAgent:
         vectorstore = FAISS.from_texts([text], embeddings)
         return vectorstore
 
+    # ----------------------------
+    # Job Description
+    # ----------------------------
+    def clean_job_description(self, raw_text: str) -> str:
+        patterns = [
+            r'Apply', r'Save', r'Show more options', r'How your profile.*',
+            r'Get AI-powered advice.*', r'Tailor my resume.*', r'Did you apply.*',
+            r'Yes', r'No'
+        ]
+        for pat in patterns:
+            raw_text = re.sub(pat, '', raw_text, flags=re.IGNORECASE)
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        return "\n".join(lines)
+
+    def extract_skills_from_jd(self, jd_text):
+        try:
+            llm = ChatOpenAI(model="gpt-4o-mini", api_key=self.api_key)
+            prompt = f"""
+            Extract a comprehensive list of technical skills, technologies, and competencies required from this job description.
+            Return ONLY a plain comma-separated list of skills.
+
+            Job Description:
+            {jd_text}
+            """
+            response = llm.invoke(prompt)
+            skills_text = response.content.strip()
+            skills = [s.strip() for s in re.split(r',|\n|-|\*', skills_text) if s.strip()]
+            return list(dict.fromkeys(skills))
+        except Exception as e:
+            print(f"Error extracting skills from job description: {e}")
+            return []
+
+    # ----------------------------
+    # Skill Analysis
+    # ----------------------------
     def analyze_skill(self, qa_chain, skill):
         query = f"On a scale of 0-10, how clearly does the candidate mention proficiency in {skill}? Provide a numeric rating first, followed by reasoning."
         response = qa_chain.run(query)
@@ -89,92 +124,6 @@ class ResumeAnalysisAgent:
         score = int(match.group(1)) if match else 0
         reasoning = response.split('.', 1)[1].strip() if '.' in response and len(response.split('.')) > 1 else ""
         return skill, min(score, 10), reasoning
-
-    def analyze_resume_weaknesses(self):
-        if not self.resume_text or not self.extracted_skills or not self.analysis_result:
-            return []
-        weaknesses = []
-        for skill in self.analysis_result.get("missing_skills", []):
-            llm = ChatOpenAI(model='gpt-4o-mini', api_key=self.api_key)
-            prompt = f"""Analyze why the resume is weak in demonstrating proficiency in "{skill}".
-
-            For your analysis, consider:
-            1. What's missing from the resume regarding this skill?
-            2. How could it be improved with specific examples?
-            3. What specific action items would make this skill stand out?
-
-            Resume Content:
-            {self.resume_text[:3000]}...
-
-            Provide your response in this JSON format:
-            {{
-                "weakness": "A concise description of what's missing or problematic (1-2 sentences)",
-                "improvement_suggestions": [
-                    "Specific suggestion 1",
-                    "Specific suggestion 2",
-                    "Specific suggestion 3"
-                ],
-                "example_addition": "A specific bullet point that could be added to showcase this skill"
-            }}
-            Return only valid JSON, no other text.
-            """
-            response = llm.invoke(prompt)
-            weakness_content = response.content.strip()
-            try:
-                weakness_data = json.loads(weakness_content)
-                weakness_detail = {
-                    "skill": skill,
-                    "score": self.analysis_result.get("skill_scores", {}).get(skill, 0),
-                    "detail": weakness_data.get("weakness", "No specific details provided."),
-                    "suggestions": weakness_data.get("improvement_suggestions", []),
-                    "example": weakness_data.get("example_addition", "")
-                }
-                weaknesses.append(weakness_detail)
-            except json.JSONDecodeError:
-                weaknesses.append({
-                    "skill": skill,
-                    "score": self.analysis_result.get("skill_scores", {}).get(skill, 0),
-                    "detail": weakness_content[:200]
-                })
-        self.resume_weaknesses = weaknesses
-        return weaknesses
-
-    def extract_skills_from_jd(self, jd_text):
-        try:
-            llm = ChatOpenAI(model="gpt-4o-mini", api_key=self.api_key)
-            prompt = f"""
-            Extract a comprehensive list of technical skills, technologies, and competencies required from this job description.
-            Format the output as a Python list of strings. Only include the list, nothing else.
-
-            Job Description:
-            {jd_text}
-            """
-            response = llm.invoke(prompt)
-            skills_text = response.content
-            match = re.search(r'\[(.*?)]', skills_text, re.DOTALL)
-            if match:
-                skills_text = match.group(0)
-            try:
-                skills_list = eval(skills_text)
-                if isinstance(skills_list, list):
-                    return skills_list
-            except:
-                pass
-            skills = []
-            for line in skills_text.split('\n'):
-                line = line.strip()
-                if line.startswith('- ') or line.startswith('* '):
-                    skill = line[2:].strip()
-                    if skill:
-                        skills.append(skill)
-                elif line.startswith('"') and line.endswith('"'):
-                    skill = line.strip('"')
-                    if skill:
-                        skills.append(skill)
-            return skills
-        except Exception as e:
-            print(f"Error extracting skills from job description: {e}")
-            return []
 
     def semantic_skill_analysis(self, resume_text, skills):
         vectorstore = self.create_vector_store(resume_text)
@@ -184,66 +133,98 @@ class ResumeAnalysisAgent:
             retriever=retriever,
             return_source_documents=False
         )
-        skill_scores = {}
-        skill_reasoning = {}
-        missing_skills = []
-        total_score = 0
+        skill_scores, skill_reasoning, missing_skills, total_score = {}, {}, [], 0
+        if not skills:
+            return {
+                "overall_score": 0,
+                "skill_scores": {},
+                "skill_reasoning": {},
+                "selected": False,
+                "reasoning": "No skills provided.",
+                "missing_skills": [],
+                "strengths": [],
+                "improvement_areas": []
+            }
         with ThreadPoolExecutor(max_workers=5) as executor:
-            results = list(executor.map(lambda skill: self.analyze_skill(qa_chain, skill), skills)) 
+            results = list(executor.map(lambda skill: self.analyze_skill(qa_chain, skill), skills))
         for skill, score, reasoning in results:
             skill_scores[skill] = score
             skill_reasoning[skill] = reasoning
             total_score += score
             if score <= 5:
                 missing_skills.append(skill)
-        overall_score = int((total_score / (10 * len(skills))) * 100)
+        overall_score = int((total_score / (10 * len(skills))) * 100) if skills else 0
         selected = overall_score >= self.cutoff_score
-        reasoning = "Candidate evaluated based on explicit resume content using semantic similarity and clear numeric scoring."
         strengths = [skill for skill, score in skill_scores.items() if score >= 7]
-        improvement_areas = missing_skills if not selected else []
         self.resume_strengths = strengths
         return {
             "overall_score": overall_score,
             "skill_scores": skill_scores,
             "skill_reasoning": skill_reasoning,
             "selected": selected,
-            "reasoning": reasoning,
+            "reasoning": "Candidate evaluated based on semantic skill analysis.",
             "missing_skills": missing_skills,
             "strengths": strengths,
-            "improvement_areas": improvement_areas
+            "improvement_areas": missing_skills if not selected else []
         }
 
+    # ----------------------------
+    # Resume Analysis
+    # ----------------------------
     def analyze_resume(self, resume_file, role_requirements=None, custom_jd=None):
-        # Extract resume text
+        import tempfile
         self.resume_text = self.extract_text_from_file(resume_file)
-
-        # Save to temp file (optional but keeps vector store consistent)
+        # Save temp file
         with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8') as tmp:
             tmp.write(self.resume_text)
             self.resume_file_path = tmp.name
-
-        # Create RAG vector store
+        # Create vectorstore
         self.rag_vectorstore = self.create_rag_vector_store(self.resume_text)
-
-        # Get job description text & requirements
+        # Process JD
         if custom_jd:
-            self.jd_text = self.extract_text_from_file(custom_jd)
+            raw_jd_text = self.extract_text_from_file(custom_jd) if hasattr(custom_jd, 'read') else str(custom_jd)
+            self.jd_text = self.clean_job_description(raw_jd_text)
             jd_skills = self.extract_skills_from_jd(self.jd_text)
         else:
             jd_skills = role_requirements or []
-
-        # Fallback if no skills extracted
         if not jd_skills:
             jd_skills = ["teamwork"]
         self.extracted_skills = jd_skills
-        # Skill analysis
         self.analysis_result = self.semantic_skill_analysis(self.resume_text, jd_skills)
-
-        # Weaknesses & suggestions (always run)
         self.analyze_resume_weaknesses()
         self.analysis_result["detailed_weaknesses"] = getattr(self, "resume_weaknesses", [])
-
         return self.analysis_result
+
+    def analyze_resume_weaknesses(self):
+        weaknesses = []
+        if not self.resume_text or not self.extracted_skills or not self.analysis_result:
+            return weaknesses
+        for skill in self.analysis_result.get("missing_skills", []):
+            try:
+                llm = ChatOpenAI(model='gpt-4o-mini', api_key=self.api_key)
+                prompt = f"Analyze weaknesses in skill '{skill}' from resume: {self.resume_text[:2000]}"
+                response = llm.invoke(prompt)
+                weaknesses.append({
+                    "skill": skill,
+                    "detail": response.content[:200]
+                })
+            except:
+                weaknesses.append({"skill": skill, "detail": "Error generating weakness"})
+        self.resume_weaknesses = weaknesses
+        return weaknesses
+
+    # ----------------------------
+    # Cleanup
+    # ----------------------------
+    def cleanup(self):
+        try:
+            if hasattr(self, 'resume_file_path') and os.path.exists(self.resume_file_path):
+                os.unlink(self.resume_file_path)
+            if hasattr(self, 'improved_resume_path') and os.path.exists(self.improved_resume_path):
+                os.unlink(self.improved_resume_path)
+        except Exception as e:
+            print(f"Error cleaning up temporary files: {e}")
+
 
     def ask_question(self, question):
         if not self.rag_vectorstore or not self.resume_text:

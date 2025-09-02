@@ -11,3 +11,6 @@ sentence-transformers
 langchain_groq
 langchain_huggingface
 requests
+langchain_openai
+langchain_community
+langchain_chroma

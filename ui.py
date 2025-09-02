@@ -219,7 +219,7 @@ def interview_questions_section(has_resume: bool, generate_questions_func: Calla
         with col1:
             question_types = st.multiselect(
                 "Question Types",
-                options=["Technical", "Behavioral", "Situational", "System Design", "Problem Solving"],
+                options=["Technical", "Projects" , "Behavioral", "Situational", "System Design", "Problem Solving"],
                 default=["Technical", "Behavioral"]
             )
         
