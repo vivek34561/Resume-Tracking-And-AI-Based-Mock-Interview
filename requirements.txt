@@ -1,7 +1,7 @@
 streamlit
 langchain
 openai
-PyPDF2==3.0.0
+PyPDF2
 tiktoken
 python-dotenv
 streamlit
@@ -14,3 +14,9 @@ requests
 langchain_openai
 langchain_community
 langchain_chroma
+langchain-huggingface
+fastapi
+python-multipart
+streamlit-webrtc 
+av
+pinecone-client
