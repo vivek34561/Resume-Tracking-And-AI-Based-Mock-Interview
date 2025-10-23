@@ -19,4 +19,5 @@ fastapi
 python-multipart
 streamlit-webrtc 
 av
+numpy
 pinecone-client

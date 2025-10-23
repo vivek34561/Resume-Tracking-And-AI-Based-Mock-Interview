@@ -6,11 +6,14 @@ st.set_page_config(
     layout  = "wide"
 )
 
-import ui
+import ui_restored_tmp as ui
 from agents import ResumeAnalysisAgent
 import atexit
 import io
 import json
+import time
+import wave
+import numpy as np
 
 try:
     # OpenAI SDK v1 style
@@ -83,6 +86,9 @@ if 'interview' not in st.session_state:
         'transcripts': [],
         'per_q_scores': [],  # list of dicts per question
         'summary': None,
+        'start_time': None,
+        'max_duration_sec': 15 * 60,
+        'decision': None,  # True/False once finalized
     }    
     
 
@@ -189,9 +195,19 @@ def synthesize_speech(text: str, api_key: str) -> bytes:
         input=text,
         response_format="mp3",
     )
-    # SDK returns bytes-like object
-    audio_bytes = resp.read() if hasattr(resp, 'read') else resp
-    return audio_bytes
+    # SDK v1 returns a response object with .content bytes
+    if hasattr(resp, "content") and isinstance(resp.content, (bytes, bytearray)):
+        return resp.content
+    # Fallbacks in case of transport wrappers
+    try:
+        return bytes(resp)
+    except Exception:
+        pass
+    try:
+        return resp.read()  # some transports expose a file-like
+    except Exception:
+        pass
+    raise RuntimeError("TTS response not in expected binary format")
 
 
 def transcribe_audio(audio_file, api_key: str) -> str:
@@ -219,6 +235,40 @@ def transcribe_audio(audio_file, api_key: str) -> str:
         except Exception:
             text = ""
     return text or ""
+
+
+def _wav_bytes_from_pcm16(pcm_bytes: bytes, sample_rate: int = 48000, channels: int = 1) -> bytes:
+    """Wrap raw int16 PCM bytes into a WAV container and return bytes."""
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_bytes)
+    buf.seek(0)
+    return buf.read()
+
+
+def transcribe_pcm_bytes(pcm_bytes: bytes, sample_rate: int, api_key: str) -> str:
+    """Transcribe raw PCM16 mono audio using Whisper-1."""
+    wav_bytes = _wav_bytes_from_pcm16(pcm_bytes, sample_rate=sample_rate, channels=1)
+    client = _get_client(api_key)
+    fname = 'answer.wav'
+    mime = 'audio/wav'
+    file_tuple = (fname, io.BytesIO(wav_bytes), mime)
+    tr = client.audio.transcriptions.create(
+        model="whisper-1",
+        file=file_tuple,
+        response_format="json"
+    )
+    text = getattr(tr, 'text', None)
+    if text:
+        return text
+    # dict-like fallback
+    try:
+        return tr.get('text', '')
+    except Exception:
+        return ""
 
 
 def score_answer(question: str, transcript: str, api_key: str) -> dict:
@@ -259,6 +309,27 @@ def score_answer(question: str, transcript: str, api_key: str) -> dict:
     return data
 
 
+def generate_followup_question(resume_text: str, last_question: str, transcript: str, api_key: str) -> str:
+    """Create a brief, targeted follow-up question based on last question and the candidate answer."""
+    client = _get_client(api_key)
+    sys = (
+        "You are a concise technical interviewer. Generate ONE short follow-up question (max 25 words) "
+        "to probe deeper based on the prior question and the candidate's answer. If no follow-up is needed, respond with NONE."
+    )
+    user = (
+        f"Resume context (for tailoring):\n{resume_text[:1500]}\n\n"
+        f"Previous question: {last_question}\n"
+        f"Candidate answer transcript: {transcript}"
+    )
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+        temperature=0.2,
+    )
+    content = resp.choices[0].message.content.strip()
+    return None if content.upper().startswith("NONE") else content
+
+
 def start_mock_interview(agent: ResumeAnalysisAgent, question_types, difficulty, num_questions: int = 10):
     with st.spinner("Preparing your personalized interview..."):
         qs = agent.generate_interview_questions(question_types, difficulty, num_questions)
@@ -278,6 +349,9 @@ def start_mock_interview(agent: ResumeAnalysisAgent, question_types, difficulty,
             'transcripts': [],
             'per_q_scores': [],
             'summary': None,
+            'start_time': time.time(),
+            'max_duration_sec': st.session_state.interview.get('max_duration_sec', 15*60),
+            'decision': None,
         }
 
 
@@ -309,6 +383,142 @@ def process_answer(audio_file):
                 strengths += p.get('strengths', [])
                 weaknesses += p.get('weaknesses', [])
             # keep top 5 unique
+            strengths = list(dict.fromkeys(strengths))[:5]
+            weaknesses = list(dict.fromkeys(weaknesses))[:5]
+            st.session_state.interview['summary'] = {
+                'communication': round(comm, 1),
+                'technical_knowledge': round(tech, 1),
+                'problem_solving': round(prob, 1),
+                'overall': round(overall, 1),
+                'strengths': strengths,
+                'weaknesses': weaknesses,
+            }
+        st.session_state.interview['completed'] = True
+
+
+def process_answer_pcm(pcm_bytes: bytes, sample_rate: int):
+    """Process one answer captured from WebRTC PCM stream: transcribe, score, advance pointer."""
+    api_key = st.session_state.openai_api_key
+    idx = st.session_state.interview['current']
+    question = st.session_state.interview['questions'][idx]
+
+    transcript = transcribe_pcm_bytes(pcm_bytes, sample_rate, api_key)
+    scores = score_answer(question, transcript, api_key)
+
+    st.session_state.interview['answers'].append(None)
+    st.session_state.interview['transcripts'].append(transcript)
+    st.session_state.interview['per_q_scores'].append(scores)
+
+    # Decide whether to ask a follow-up or move on
+    followup = None
+    try:
+        if scores.get('overall', 0) < 60:
+            resume_text = getattr(st.session_state.resume_agent, 'resume_text', '') or ''
+            followup = generate_followup_question(resume_text, question, transcript, api_key)
+    except Exception:
+        followup = None
+
+    st.session_state.interview['current'] += 1
+    # Insert follow-up if available and time remains
+    if followup and st.session_state.interview['current'] < len(st.session_state.interview['questions']):
+        st.session_state.interview['questions'].insert(st.session_state.interview['current'], followup)
+
+    # Finalize if done or timed-out handled by UI caller
+    if st.session_state.interview['current'] >= len(st.session_state.interview['questions']):
+        perq = st.session_state.interview['per_q_scores']
+        if perq:
+            comm = sum(p.get('communication', 0) for p in perq) / len(perq)
+            tech = sum(p.get('technical_knowledge', 0) for p in perq) / len(perq)
+            prob = sum(p.get('problem_solving', 0) for p in perq) / len(perq)
+            overall = sum(p.get('overall', 0) for p in perq) / len(perq)
+            strengths = []
+            weaknesses = []
+            for p in perq:
+                strengths += p.get('strengths', [])
+                weaknesses += p.get('weaknesses', [])
+            strengths = list(dict.fromkeys(strengths))[:5]
+            weaknesses = list(dict.fromkeys(weaknesses))[:5]
+            st.session_state.interview['summary'] = {
+                'communication': round(comm, 1),
+                'technical_knowledge': round(tech, 1),
+                'problem_solving': round(prob, 1),
+                'overall': round(overall, 1),
+                'strengths': strengths,
+                'weaknesses': weaknesses,
+            }
+        st.session_state.interview['completed'] = True
+
+
+def end_interview_now():
+    """Force-end the interview and compute summary + decision."""
+    inter = st.session_state.interview
+    if inter['completed']:
+        return
+    # compute summary if not present
+    perq = inter['per_q_scores']
+    if perq:
+        comm = sum(p.get('communication', 0) for p in perq) / len(perq)
+        tech = sum(p.get('technical_knowledge', 0) for p in perq) / len(perq)
+        prob = sum(p.get('problem_solving', 0) for p in perq) / len(perq)
+        overall = sum(p.get('overall', 0) for p in perq) / len(perq)
+        strengths = []
+        weaknesses = []
+        for p in perq:
+            strengths += p.get('strengths', [])
+            weaknesses += p.get('weaknesses', [])
+        strengths = list(dict.fromkeys(strengths))[:5]
+        weaknesses = list(dict.fromkeys(weaknesses))[:5]
+        inter['summary'] = {
+            'communication': round(comm, 1),
+            'technical_knowledge': round(tech, 1),
+            'problem_solving': round(prob, 1),
+            'overall': round(overall, 1),
+            'strengths': strengths,
+            'weaknesses': weaknesses,
+        }
+    inter['completed'] = True
+    # decision threshold
+    overall = inter.get('summary', {}).get('overall', 0)
+    cutoff = getattr(st.session_state.resume_agent, 'cutoff_score', 75)
+    inter['decision'] = bool(overall >= cutoff)
+
+
+def process_empty_answer():
+    """Advance to next question treating the answer as empty/no response."""
+    api_key = st.session_state.openai_api_key
+    idx = st.session_state.interview['current']
+    question = st.session_state.interview['questions'][idx]
+    transcript = ""
+    scores = score_answer(question, transcript, api_key)
+
+    st.session_state.interview['answers'].append(None)
+    st.session_state.interview['transcripts'].append(transcript)
+    st.session_state.interview['per_q_scores'].append(scores)
+
+    followup = None
+    try:
+        if scores.get('overall', 0) < 60:
+            resume_text = getattr(st.session_state.resume_agent, 'resume_text', '') or ''
+            followup = generate_followup_question(resume_text, question, transcript, api_key)
+    except Exception:
+        followup = None
+
+    st.session_state.interview['current'] += 1
+    if followup and st.session_state.interview['current'] < len(st.session_state.interview['questions']):
+        st.session_state.interview['questions'].insert(st.session_state.interview['current'], followup)
+
+    if st.session_state.interview['current'] >= len(st.session_state.interview['questions']):
+        perq = st.session_state.interview['per_q_scores']
+        if perq:
+            comm = sum(p.get('communication', 0) for p in perq) / len(perq)
+            tech = sum(p.get('technical_knowledge', 0) for p in perq) / len(perq)
+            prob = sum(p.get('problem_solving', 0) for p in perq) / len(perq)
+            overall = sum(p.get('overall', 0) for p in perq) / len(perq)
+            strengths = []
+            weaknesses = []
+            for p in perq:
+                strengths += p.get('strengths', [])
+                weaknesses += p.get('weaknesses', [])
             strengths = list(dict.fromkeys(strengths))[:5]
             weaknesses = list(dict.fromkeys(weaknesses))[:5]
             st.session_state.interview['summary'] = {

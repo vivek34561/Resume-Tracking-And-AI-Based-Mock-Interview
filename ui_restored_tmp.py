@@ -340,7 +340,6 @@ def improved_resume_section(has_resume: bool, get_improved_resume_func: Callable
         st.warning("Please upload and analyze a resume first")
         
 
-
 def mock_interview_section(
     has_resume: bool,
     start_interview_func: Callable,
@@ -425,63 +424,6 @@ def mock_interview_section(
                 if last.get('weaknesses'):
                     st.markdown("**Weaknesses:** " + ", ".join(last['weaknesses']))
         return
-
-    # Completed
-    if inter['completed']:
-        st.success("Mock interview completed!")
-        summary = inter.get('summary')
-        if summary:
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Overall", summary['overall'])
-            c2.metric("Communication", summary['communication'])
-            c3.metric("Technical", summary['technical_knowledge'])
-            c4.metric("Problem Solving", summary['problem_solving'])
-            st.progress(summary['overall'] / 100.0)
-
-            colA, colB = st.columns(2)
-            with colA:
-                st.subheader("Top Strengths")
-                if summary['strengths']:
-                    for s in summary['strengths']:
-                        st.markdown(f"- {s}")
-                else:
-                    st.write("—")
-            with colB:
-                st.subheader("Key Weaknesses")
-                if summary['weaknesses']:
-                    for w in summary['weaknesses']:
-                        st.markdown(f"- {w}")
-                else:
-                    st.write("—")
-
-        # Detailed per-question review
-        st.markdown("### Per-Question Review")
-        for i, (q, sc, tr) in enumerate(zip(inter['questions'], inter['per_q_scores'], inter['transcripts'])):
-            with st.expander(f"Q{i+1}: {q}"):
-                st.markdown(f"**Your answer (transcript):** {tr if tr else '—'}")
-                cols = st.columns(4)
-                cols[0].metric("Communication", sc.get('communication',0))
-                cols[1].metric("Technical", sc.get('technical_knowledge',0))
-                cols[2].metric("Problem Solving", sc.get('problem_solving',0))
-                cols[3].metric("Overall", sc.get('overall',0))
-                st.markdown(f"**Feedback:** {sc.get('feedback','')}")
-                if sc.get('strengths'):
-                    st.caption("Strengths: " + ", ".join(sc['strengths']))
-                if sc.get('weaknesses'):
-                    st.caption("Weaknesses: " + ", ".join(sc['weaknesses']))
-
-        if st.button("Restart Interview"):
-            inter.update({
-                'started': False,
-                'completed': False,
-                'current': 0,
-                'questions': [],
-                'answers': [],
-                'transcripts': [],
-                'per_q_scores': [],
-                'summary': None,
-            })
-            st.rerun()
 
 
 
