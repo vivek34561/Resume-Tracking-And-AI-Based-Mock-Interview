@@ -4,18 +4,50 @@ import os
 import io
 import tempfile
 import json
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from concurrent.futures import ThreadPoolExecutor
 import requests
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 JOOBLE_API_KEY = os.getenv("JOOBLE_API_KEY")
+
+def groq_chat(api_key: str, messages: list, model: str = None, temperature: float = 0.2) -> str:
+    """Minimal Groq chat-completions helper returning assistant content as text.
+
+    Adjust the model name to your Groq deployment (e.g., 'llama-3.1-70b-versatile') if needed.
+    """
+    if not api_key:
+        raise RuntimeError("Groq API key missing")
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if not model:
+        model = os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
+    try_models = [model]
+    for alt in ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama-3.1-8b-instant"]:
+        if alt not in try_models:
+            try_models.append(alt)
+    last_err = None
+    for m in try_models:
+        payload = {"model": m, "messages": messages, "temperature": temperature}
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        if resp.status_code >= 400:
+            txt = resp.text.lower()
+            if "model" in txt and ("decommissioned" in txt or "not found" in txt or "unknown" in txt):
+                last_err = f"{resp.status_code} {resp.reason}: {resp.text}"
+                continue
+            raise requests.HTTPError(f"{resp.status_code} {resp.reason}: {resp.text}")
+        data = resp.json()
+        try:
+            return data["choices"][0]["message"]["content"]
+        except Exception:
+            return json.dumps(data)
+    raise requests.HTTPError(last_err or "All Groq model attempts failed")
 class ResumeAnalysisAgent:
     
-    def __init__(self, api_key, cutoff_score=75):
+    def __init__(self, api_key, cutoff_score=75, model=None):
         self.api_key = api_key
         self.cutoff_score = cutoff_score
+        self.model = model or os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
         self.resume_text = None
         self.analysis_result = None
         self.rag_vectorstore = None
@@ -73,12 +105,12 @@ class ResumeAnalysisAgent:
     def create_rag_vector_store(self, text):
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = splitter.split_text(text)
-        embeddings = OpenAIEmbeddings(api_key=self.api_key)
+        embeddings = FastEmbedEmbeddings()
         vectorstore = FAISS.from_texts(chunks, embeddings)
         return vectorstore
 
     def create_vector_store(self, text):
-        embeddings = OpenAIEmbeddings(api_key=self.api_key)
+        embeddings = FastEmbedEmbeddings()
         vectorstore = FAISS.from_texts([text], embeddings)
         return vectorstore
 
@@ -98,7 +130,6 @@ class ResumeAnalysisAgent:
 
     def extract_skills_from_jd(self, jd_text):
         try:
-            llm = ChatOpenAI(model="gpt-4o-mini", api_key=self.api_key)
             prompt = f"""
             Extract a comprehensive list of technical skills, technologies, and competencies required from this job description.
             Return ONLY a plain comma-separated list of skills.
@@ -106,8 +137,7 @@ class ResumeAnalysisAgent:
             Job Description:
             {jd_text}
             """
-            response = llm.invoke(prompt)
-            skills_text = response.content.strip()
+            skills_text = groq_chat(self.api_key, messages=[{"role": "user", "content": prompt}], model=self.model).strip()
             skills = [s.strip() for s in re.split(r',|\n|-|\*', skills_text) if s.strip()]
             return list(dict.fromkeys(skills))
         except Exception as e:
@@ -117,22 +147,31 @@ class ResumeAnalysisAgent:
     # ----------------------------
     # Skill Analysis
     # ----------------------------
-    def analyze_skill(self, qa_chain, skill):
-        query = f"On a scale of 0-10, how clearly does the candidate mention proficiency in {skill}? Provide a numeric rating first, followed by reasoning."
-        response = qa_chain.run(query)
-        match = re.search(r"(\d{1,2})", response)
+    def analyze_skill(self, retriever, resume_text, skill):
+        # Retrieve context for the skill
+        try:
+            docs = retriever.get_relevant_documents(skill)
+        except Exception:
+            docs = []
+        context = "\n\n".join([getattr(d, 'page_content', str(d)) for d in docs][:3]) or resume_text[:1500]
+        user = (
+            f"Context from resume (may be partial):\n{context}\n\n"
+            f"Task: On a scale of 0-10, how clearly does the candidate mention proficiency in '{skill}'? "
+            f"First output ONLY a number (0-10), then a short reasoning sentence."
+        )
+        text = groq_chat(self.api_key, messages=[{"role": "user", "content": user}], model=self.model)
+        match = re.search(r"\b(\d{1,2})\b", text)
         score = int(match.group(1)) if match else 0
-        reasoning = response.split('.', 1)[1].strip() if '.' in response and len(response.split('.')) > 1 else ""
+        reasoning = text
+        if match:
+            idx = text.find(match.group(1))
+            if idx >= 0:
+                reasoning = text[idx + len(match.group(1)):].strip(" -:;\n")
         return skill, min(score, 10), reasoning
 
     def semantic_skill_analysis(self, resume_text, skills):
         vectorstore = self.create_vector_store(resume_text)
         retriever = vectorstore.as_retriever()
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=ChatOpenAI(model='gpt-4o-mini', api_key=self.api_key),
-            retriever=retriever,
-            return_source_documents=False
-        )
         skill_scores, skill_reasoning, missing_skills, total_score = {}, {}, [], 0
         if not skills:
             return {
@@ -146,7 +185,7 @@ class ResumeAnalysisAgent:
                 "improvement_areas": []
             }
         with ThreadPoolExecutor(max_workers=5) as executor:
-            results = list(executor.map(lambda skill: self.analyze_skill(qa_chain, skill), skills))
+            results = list(executor.map(lambda s: self.analyze_skill(retriever, resume_text, s), skills))
         for skill, score, reasoning in results:
             skill_scores[skill] = score
             skill_reasoning[skill] = reasoning
@@ -201,14 +240,13 @@ class ResumeAnalysisAgent:
             return weaknesses
         for skill in self.analysis_result.get("missing_skills", []):
             try:
-                llm = ChatOpenAI(model='gpt-4o-mini', api_key=self.api_key)
                 prompt = f"Analyze weaknesses in skill '{skill}' from resume: {self.resume_text[:2000]}"
-                response = llm.invoke(prompt)
+                response = groq_chat(self.api_key, messages=[{"role": "user", "content": prompt}])
                 weaknesses.append({
                     "skill": skill,
-                    "detail": response.content[:200]
+                    "detail": response[:200]
                 })
-            except:
+            except Exception:
                 weaknesses.append({"skill": skill, "detail": "Error generating weakness"})
         self.resume_weaknesses = weaknesses
         return weaknesses
@@ -230,14 +268,17 @@ class ResumeAnalysisAgent:
         if not self.rag_vectorstore or not self.resume_text:
             return "Please analyze a resume first."
         retriever = self.rag_vectorstore.as_retriever(search_kwargs={"k": 3})
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=ChatOpenAI(model="gpt-4o-mini", api_key=self.api_key),
-            chain_type="stuff",
-            retriever=retriever,
-            return_source_documents=False,
+        try:
+            docs = retriever.get_relevant_documents(question)
+        except Exception:
+            docs = []
+        context = "\n\n".join([getattr(d, 'page_content', str(d)) for d in docs])
+        prompt = (
+            "Answer the user's question strictly using only the Context. "
+            "If the answer is not in the context, reply with 'I'm not sure based on the resume.'\n\n"
+            f"Context:\n{context}\n\nQuestion: {question}\n\nAnswer:"
         )
-        response = qa_chain.run(question)
-        return response
+        return groq_chat(self.api_key, messages=[{"role": "user", "content": prompt}]).strip()
 
     
     
@@ -249,7 +290,6 @@ class ResumeAnalysisAgent:
             return []
 
         try:
-            llm = ChatOpenAI(model="gpt-4o-mini", api_key=self.api_key)
 
             # Context for GPT
             context = f"""
@@ -282,7 +322,7 @@ class ResumeAnalysisAgent:
     """
 
             # Get response from GPT
-            raw_response = llm.invoke(prompt).content.strip()
+            raw_response = groq_chat(self.api_key, messages=[{"role": "user", "content": prompt}]).strip()
 
             # Try parsing JSON
             try:
@@ -361,7 +401,6 @@ class ResumeAnalysisAgent:
             remaining_areas = [area for area in improvement_areas if area not in improvements]
 
             if remaining_areas:
-                llm = ChatOpenAI(model="gpt-4o-mini", api_key=self.api_key)
 
                 weaknesses_text = ""
                 if self.resume_weaknesses:
@@ -394,18 +433,15 @@ For each improvement area, provide:
 3. Where relevant, provide a before/after example
 
 Format the response as a JSON object with improvement areas as keys, each containing:
-- "description": general description
-- "specific": list of specific suggestions
-- "before_after": (where applicable) a dict with "before" and "after" examples
 
 Only include the requested improvement areas that aren't already covered.
 Focus particularly on addressing the resume weaknesses identified.
 """
 
-                response = llm.invoke(prompt)
+                response = groq_chat(self.api_key, messages=[{"role": "user", "content": prompt}])
                 ai_improvements = {}
 
-                json_match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', response.content)
+                json_match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', response)
                 if json_match:
                     try:
                         ai_improvements = json.loads(json_match.group(1))
@@ -414,7 +450,7 @@ Focus particularly on addressing the resume weaknesses identified.
                         pass
 
                 if not ai_improvements:
-                    sections = response.content.split("##")
+                    sections = response.split("##")
                     for section in sections:
                         if not section.strip():
                             continue
@@ -485,8 +521,6 @@ Focus particularly on addressing the resume weaknesses identified.
                     if 'example' in weakness and weakness['example']:
                         improvement_examples += f"For {skill_name}: {weakness['example']}\n\n"
 
-            llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7, api_key=self.api_key)
-
             jd_context = ""
             if self.jd_text:
                 jd_context = f"Job Description:\n{self.jd_text}\n\n"
@@ -520,8 +554,7 @@ Return only the improved resume text without any additional explanations.
 Format the resume in a modern, clean style with clear section headings.
 """
 
-            response = llm.invoke(prompt)
-            improved_resume = response.content.strip()
+            improved_resume = groq_chat(self.api_key, messages=[{"role": "user", "content": prompt}]).strip()
 
             with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8') as tmp:
                 tmp.write(improved_resume)
@@ -549,9 +582,6 @@ Format the resume in a modern, clean style with clear section headings.
 
 
     
-
-import requests
-
 class JobAgent:
     def __init__(self):
         # Adzuna API credentials (get from https://developer.adzuna.com/)

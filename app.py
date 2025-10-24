@@ -9,11 +9,13 @@ st.set_page_config(
 import ui_restored_tmp as ui
 from agents import ResumeAnalysisAgent
 import atexit
+import os
 import io
 import json
 import time
 import wave
 import numpy as np
+import requests
 
 try:
     # OpenAI SDK v1 style
@@ -72,9 +74,9 @@ if 'resume_analyzed' not in st.session_state:
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
 
-# NEW: store API key for speech funcs
-if 'openai_api_key' not in st.session_state:
-    st.session_state.openai_api_key = None
+# NEW: store API key for speech funcs and provider
+if 'api_key' not in st.session_state:
+    st.session_state.api_key = None
 # NEW: mock interview state
 if 'interview' not in st.session_state:
     st.session_state.interview = {
@@ -95,17 +97,37 @@ if 'interview' not in st.session_state:
 
 def setup_agent(config)    :
     """set up the resume analysis agent with the provided configuration"""
-    
-    
-    if not config["openai_api_key"]:
-        st.error("Please enter your OpenAI API Key in the sidebar.")
-        st.stop() 
-    st.session_state.openai_api_key = config["openai_api_key"]
+    # Accept either OpenAI or Groq provider. Store a generic api_key and provider in session state.
+    provider = config.get("provider", "openai")
+    api_key = config.get("api_key")
+    if not api_key:
+        st.error(f"Please enter your {provider.upper()} API Key in the sidebar.")
+        st.stop()
+
+    st.session_state.provider = provider
+    st.session_state.api_key = api_key
+    if provider == 'groq':
+        st.session_state.groq_model = config.get("model") or os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
+
+    # The ResumeAnalysisAgent currently expects an OpenAI-style API key and uses langchain_openai.
+    # If provider is 'groq' we still pass the key into the agent but some agent features may require OpenAI.
     if st.session_state.resume_agent is None:
-        st.session_state.resume_agent = ResumeAnalysisAgent(api_key = config["openai_api_key"])
-    
+        st.session_state.resume_agent = ResumeAnalysisAgent(api_key=api_key, model=st.session_state.get('groq_model'))
     else:
-        st.session_state.resume_agent.api_key = config["openai_api_key"]
+        st.session_state.resume_agent.api_key = api_key
+        if hasattr(st.session_state.resume_agent, 'model'):
+            st.session_state.resume_agent.model = st.session_state.get('groq_model')
+    
+    # Quick provider-specific sanity checks
+    if provider == 'groq':
+        # Warn if key doesn't look like Groq key
+        if not api_key.startswith('gsk_'):
+            st.warning("Your Groq API key usually starts with 'gsk_'. Please double-check it if you see 401 errors.")
+        # Optional: verify key by listing models
+        try:
+            _ = groq_chat(api_key, messages=[{"role": "user", "content": "ping"}], model=st.session_state.get('groq_model'))
+        except Exception as e:
+            st.info("If you see 'Unauthorized', recheck your Groq API key and model access in https://console.groq.com.")
         
     return st.session_state.resume_agent
 #     In Streamlit, every time the user clicks something, uploads a file, or changes input, the script reruns from the top.
@@ -180,13 +202,67 @@ def get_improved_resume(agent , target_role , highlight_skills)    :
 # ==========================
 
 def _get_client(api_key: str):
+    # Keep existing OpenAI client factory for OpenAI provider only.
+    if st.session_state.get('provider', 'openai') != 'openai':
+        raise RuntimeError("OpenAI client requested but provider is not set to OpenAI.")
     if OpenAI is None:
         raise RuntimeError("openai package not found. Install with: pip install openai>=1.0.0")
     return OpenAI(api_key=api_key)
 
 
+def groq_chat(api_key: str, messages: list, model: str = None, temperature: float = 0.2) -> str:
+    """Simple helper to call Groq's chat completions endpoint.
+
+    Note: This uses a minimal expected payload/response shape. If Groq's API differs
+    for your account/region, update the URL/response parsing accordingly.
+    """
+    if not api_key:
+        raise RuntimeError("Groq API key missing")
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if not model:
+        # prefer explicitly chosen model in session, then env var, then sane default
+        model = st.session_state.get('groq_model') if 'groq_model' in st.session_state else os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
+    # Try primary then fallback models if server complains about model
+    try_models = [model]
+    # Add a couple of reasonable fallbacks
+    for alt in ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama-3.1-8b-instant"]:
+        if alt not in try_models:
+            try_models.append(alt)
+
+    last_err = None
+    for m in try_models:
+        payload = {"model": m, "messages": messages, "temperature": temperature}
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        if resp.status_code >= 400:
+            txt = resp.text.lower()
+            if "model" in txt and ("decommissioned" in txt or "not found" in txt or "unknown" in txt):
+                last_err = f"{resp.status_code} {resp.reason}: {resp.text}"
+                continue
+            # Other errors: raise immediately
+            raise requests.HTTPError(f"{resp.status_code} {resp.reason}: {resp.text}")
+        j = resp.json()
+        try:
+            return j["choices"][0]["message"]["content"]
+        except Exception:
+            return json.dumps(j)
+    # if we exhausted all models
+    raise requests.HTTPError(last_err or "All Groq model attempts failed")
+    # Expected: { choices: [ { message: { content: "..." } } ] }
+    try:
+        return j["choices"][0]["message"]["content"]
+    except Exception:
+        # Try alternate shapes
+        try:
+            return j["choices"][0]["text"]
+        except Exception:
+            return json.dumps(j)
+
+
 def synthesize_speech(text: str, api_key: str) -> bytes:
     """Use OpenAI TTS to synthesize the given text and return mp3 bytes."""
+    if st.session_state.get('provider', 'openai') != 'openai':
+        raise RuntimeError("TTS is only available with the OpenAI provider in this app.")
     client = _get_client(api_key)
     # model names may vary; gpt-4o-mini-tts is widely available
     resp = client.audio.speech.create(
@@ -212,6 +288,8 @@ def synthesize_speech(text: str, api_key: str) -> bytes:
 
 def transcribe_audio(audio_file, api_key: str) -> str:
     """Transcribe user audio (UploadedFile) to text using Whisper-1."""
+    if st.session_state.get('provider', 'openai') != 'openai':
+        raise RuntimeError("Audio transcription is only available with the OpenAI provider in this app.")
     client = _get_client(api_key)
     # audio_file is a Streamlit UploadedFile; get bytes and name
     data = audio_file.read()
@@ -252,6 +330,8 @@ def _wav_bytes_from_pcm16(pcm_bytes: bytes, sample_rate: int = 48000, channels: 
 def transcribe_pcm_bytes(pcm_bytes: bytes, sample_rate: int, api_key: str) -> str:
     """Transcribe raw PCM16 mono audio using Whisper-1."""
     wav_bytes = _wav_bytes_from_pcm16(pcm_bytes, sample_rate=sample_rate, channels=1)
+    if st.session_state.get('provider', 'openai') != 'openai':
+        raise RuntimeError("Audio transcription is only available with the OpenAI provider in this app.")
     client = _get_client(api_key)
     fname = 'answer.wav'
     mime = 'audio/wav'
@@ -273,61 +353,88 @@ def transcribe_pcm_bytes(pcm_bytes: bytes, sample_rate: int, api_key: str) -> st
 
 def score_answer(question: str, transcript: str, api_key: str) -> dict:
     """Score an answer across categories using an LLM and return a JSON dict."""
-    client = _get_client(api_key)
-    sys = (
-        "You are an expert technical interviewer. Score the candidate's single answer strictly. "
-        "Return ONLY compact JSON with keys: communication (0-10), technical_knowledge (0-10), "
-        "problem_solving (0-10), overall (0-100), strengths (array of short phrases), "
-        "weaknesses (array of short phrases), feedback (<=60 words)."
-    )
-    user = (
-        f"Question: {question}\n\n"
-        f"Candidate answer (transcript): {transcript}"
-    )
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": sys},
-            {"role": "user", "content": user},
-        ],
-        temperature=0.2,
-    )
-    content = resp.choices[0].message.content
-    try:
-        data = json.loads(content)
-    except Exception:
-        data = {
-            "communication": 5,
-            "technical_knowledge": 5,
-            "problem_solving": 5,
-            "overall": 50,
-            "strengths": [],
-            "weaknesses": [],
-            "feedback": "",
-        }
-    return data
+    provider = st.session_state.get('provider', 'openai')
+    client = None
+    if provider == 'openai':
+        client = _get_client(api_key)
+    # For Groq provider we will use a lightweight HTTP call to Groq's chat endpoint (requires Groq API key)
+    if provider == 'groq':
+        # Build system + user messages similar to the OpenAI flow
+        sys = (
+            "You are an expert technical interviewer. Score the candidate's single answer strictly. "
+            "Return ONLY compact JSON with keys: communication (0-10), technical_knowledge (0-10), "
+            "problem_solving (0-10), overall (0-100), strengths (array of short phrases), "
+            "weaknesses (array of short phrases), feedback (<=60 words)."
+        )
+        user = (
+            f"Question: {question}\n\n"
+            f"Candidate answer (transcript): {transcript}"
+        )
+        try:
+            content = groq_chat(st.session_state.api_key, messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}])
+            try:
+                data = json.loads(content)
+            except Exception:
+                data = {
+                    "communication": 5,
+                    "technical_knowledge": 5,
+                    "problem_solving": 5,
+                    "overall": 50,
+                    "strengths": [],
+                    "weaknesses": [],
+                    "feedback": "",
+                }
+            return data
+        except Exception as e:
+            return {
+                "communication": 5,
+                "technical_knowledge": 5,
+                "problem_solving": 5,
+                "overall": 50,
+                "strengths": [],
+                "weaknesses": [],
+                "feedback": f"Error scoring with Groq: {e}",
+            }
 
 
 def generate_followup_question(resume_text: str, last_question: str, transcript: str, api_key: str) -> str:
     """Create a brief, targeted follow-up question based on last question and the candidate answer."""
-    client = _get_client(api_key)
-    sys = (
-        "You are a concise technical interviewer. Generate ONE short follow-up question (max 25 words) "
-        "to probe deeper based on the prior question and the candidate's answer. If no follow-up is needed, respond with NONE."
-    )
-    user = (
-        f"Resume context (for tailoring):\n{resume_text[:1500]}\n\n"
-        f"Previous question: {last_question}\n"
-        f"Candidate answer transcript: {transcript}"
-    )
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
-        temperature=0.2,
-    )
-    content = resp.choices[0].message.content.strip()
-    return None if content.upper().startswith("NONE") else content
+    provider = st.session_state.get('provider', 'openai')
+    if provider == 'openai':
+        client = _get_client(api_key)
+        sys = (
+            "You are a concise technical interviewer. Generate ONE short follow-up question (max 25 words) "
+            "to probe deeper based on the prior question and the candidate's answer. If no follow-up is needed, respond with NONE."
+        )
+        user = (
+            f"Resume context (for tailoring):\n{resume_text[:1500]}\n\n"
+            f"Previous question: {last_question}\n"
+            f"Candidate answer transcript: {transcript}"
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+            temperature=0.2,
+        )
+        content = resp.choices[0].message.content.strip()
+        return None if content.upper().startswith("NONE") else content
+    else:
+        # Groq path
+        sys = (
+            "You are a concise technical interviewer. Generate ONE short follow-up question (max 25 words) "
+            "to probe deeper based on the prior question and the candidate's answer. If no follow-up is needed, respond with NONE."
+        )
+        user = (
+            f"Resume context (for tailoring):\n{resume_text[:1500]}\n\n"
+            f"Previous question: {last_question}\n"
+            f"Candidate answer transcript: {transcript}"
+        )
+        try:
+            content = groq_chat(st.session_state.api_key, messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}])
+            content = content.strip()
+            return None if content.upper().startswith("NONE") else content
+        except Exception:
+            return None
 
 
 def start_mock_interview(agent: ResumeAnalysisAgent, question_types, difficulty, num_questions: int = 10):
@@ -357,7 +464,7 @@ def start_mock_interview(agent: ResumeAnalysisAgent, question_types, difficulty,
 
 def process_answer(audio_file):
     """Handle one answer: STT -> scoring -> advance pointer."""
-    api_key = st.session_state.openai_api_key
+    api_key = st.session_state.api_key
     idx = st.session_state.interview['current']
     question = st.session_state.interview['questions'][idx]
 
@@ -398,7 +505,7 @@ def process_answer(audio_file):
 
 def process_answer_pcm(pcm_bytes: bytes, sample_rate: int):
     """Process one answer captured from WebRTC PCM stream: transcribe, score, advance pointer."""
-    api_key = st.session_state.openai_api_key
+    api_key = st.session_state.api_key
     idx = st.session_state.interview['current']
     question = st.session_state.interview['questions'][idx]
 
@@ -485,7 +592,7 @@ def end_interview_now():
 
 def process_empty_answer():
     """Advance to next question treating the answer as empty/no response."""
-    api_key = st.session_state.openai_api_key
+    api_key = st.session_state.api_key
     idx = st.session_state.interview['current']
     question = st.session_state.interview['questions'][idx]
     transcript = ""
@@ -618,7 +725,7 @@ def main():
             ui.mock_interview_section(
                 has_resume=True,
                 start_interview_func=lambda types, diff, num: start_mock_interview(st.session_state.resume_agent, types, diff, num),
-                play_tts_func=lambda text: synthesize_speech(text, st.session_state.openai_api_key),
+                play_tts_func=lambda text: synthesize_speech(text, st.session_state.api_key),
                 process_audio_answer_func=lambda audio_file: process_answer(audio_file),
             )
         else:

@@ -49,7 +49,12 @@ def setup_sidebar() -> Dict:
     """Set up the sidebar configuration options"""
     with st.sidebar:
         st.header("Configuration")
-        api_key = st.text_input("Enter Your OpenAI API Key", type="password", help="Required for all AI functionality")
+        provider = st.selectbox("AI Provider", options=["openai", "groq"], index=0, help="Select which LLM provider to use")
+        api_key_label = "Enter Your OpenAI API Key" if provider == "openai" else "Enter Your Groq API Key"
+        api_key = st.text_input(api_key_label, type="password", help="Required for LLM functionality when selected")
+        model = None
+        if provider == "groq":
+            model = st.text_input("Groq Model", value="llama-3.3-70b-versatile", help="Override model if your account uses a different name")
         
         st.markdown("---")
         st.markdown("""
@@ -68,7 +73,9 @@ def setup_sidebar() -> Dict:
         """)
         
     return {
-        "openai_api_key": api_key
+        "provider": provider,
+        "api_key": api_key,
+        "model": model,
     }
 
 def create_tabs() -> List:

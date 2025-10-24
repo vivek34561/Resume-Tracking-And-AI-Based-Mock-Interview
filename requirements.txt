@@ -1,3 +1,4 @@
+pip
 streamlit>=1.35,<1.41
 openai>=1.30.0,<2.0.0
 # Pin LangChain to pre-0.2 to keep `langchain.chains` available
@@ -8,3 +9,4 @@ faiss-cpu>=1.7.4
 PyPDF2==3.0.1
 tiktoken>=0.7.0,<0.8.0
 requests>=2.31.0,<3.0.0
+fastembed>=0.2.0,<0.4.0
