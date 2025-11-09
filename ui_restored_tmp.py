@@ -302,6 +302,56 @@ def display_analysis_results(analysis_result: Dict):
     st.metric("Overall Match Score", f"{score}%", help="How well your resume matches the target role requirements")
     st.progress(score / 100)
     
+    # Application Status based on score
+    st.markdown("---")
+    if score >= 80:
+        st.success(f"""
+        ### ✅ **Highly Qualified - Strong Match!**
+        
+        **Recommendation:** You are an excellent candidate for this role.
+        - Your profile strongly aligns with the job requirements
+        - You exceed most of the required qualifications
+        - **Apply with confidence!** You have a high chance of success
+        - Highlight your top matching skills in your application
+        """)
+    elif score >= 70:
+        st.success(f"""
+        ### ✅ **Well Qualified - Good Match**
+        
+        **Recommendation:** You are a strong candidate for this position.
+        - Your qualifications align well with most requirements
+        - You meet the core competencies for this role
+        - **You should apply!** Good chance of getting shortlisted
+        - Emphasize your relevant experience and skills
+        """)
+    elif score >= 50:
+        st.info(f"""
+        ### 📋 **Qualified - You Can Apply**
+        
+        **Recommendation:** You meet the minimum requirements.
+        - You satisfy the basic qualifications for this role
+        - Review the "Areas for Improvement" section below
+        - **You can apply**, but consider:
+          - Tailoring your resume to highlight relevant skills
+          - Addressing skill gaps mentioned below
+          - Showcasing transferable skills and achievements
+        - 💪 Work on improving the missing skills to strengthen your application
+        """)
+    else:
+        st.warning(f"""
+        ### ⚠️ **Below Threshold - Consider Upskilling**
+        
+        **Recommendation:** Your profile needs improvement for this specific role.
+        -  Significant skill gaps exist between your profile and job requirements
+        -  **Consider upskilling** in the areas mentioned below before applying
+        -  You may want to:
+          - Take relevant courses or certifications
+          - Gain practical experience in missing skills
+          - Look for entry-level or related positions first
+        - 💡 Focus on the "Areas for Improvement" to increase your chances
+        """)
+    st.markdown("---")
+    
     # Strengths and weaknesses
     col1, col2 = st.columns(2)
     
