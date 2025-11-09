@@ -1,4 +1,18 @@
-# Resume-Tracking-And-AI-Based-Mock-Interview
+# ResuMate - Your AI Career Companion 🤖
+
+> AI-powered resume analysis and interview preparation tool to help students and job seekers land their dream jobs.
+
+## 🌟 Features
+
+- **Resume Analysis** - AI-powered analysis with ATS scoring
+- **Smart Chatbot** - Ask questions about your resume with context memory
+- **Interview Preparation** - Generate personalized interview questions
+- **Resume Improvement** - Get AI-driven suggestions and enhanced resume
+- **Cover Letter Generator** - Create tailored cover letters
+- **Job Search** - Search multiple job boards at once
+- **Multi-user Support** - Secure authentication and personal data storage
+
+---
 
 ## Deploy to Heroku
 

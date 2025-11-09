@@ -1,8 +1,8 @@
 import streamlit as st
 
 st.set_page_config(
-    page_title = "Recruitment Agent",
-    page_icon = "🚀",
+    page_title = "ResuMate - Your AI Career Companion",
+    page_icon = "🤖",
     layout  = "wide"
 )
 from dotenv import load_dotenv
@@ -41,7 +41,6 @@ ROLE_REQUIREMENTS = {
         "MLOps", "Scikit-learn", "Natural Language Processing (NLP)", "Hugging Face", 
         "SQL", "Git"
         ,"Experiment Tracking (MLflow, DVC)"
-
         ],
     "Frontend Engineer": [
         "React", "Vue", "Angular", "HTML5", "CSS3", "JavaScript", "TypeScript",

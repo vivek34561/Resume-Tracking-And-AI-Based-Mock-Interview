@@ -39,9 +39,9 @@ def setup_page():
 
 def display_header():
     """Display the application header"""
-    st.title("🚀AI-Powered Interview prep tool") 
+    st.title("🤖 ResuMate - Your AI Career Companion") 
     st.markdown("""
-    **AI-powered resume analysis and interview preparation tool**
+    *Get resume-ready, interview-ready, and hire-ready with AI-powered insights*
     
     Upload a resume, select a target role or paste job description, and get personalized feedback to improve your job application.
     """)
