@@ -1,78 +1,348 @@
 # database.py
 
-import sqlite3
+import mysql.connector
+from mysql.connector import pooling
 import os
-from pinecone import Pinecone, ServerlessSpec
-from langchain_openai import OpenAIEmbeddings
+from passlib.hash import pbkdf2_sha256
+from dotenv import load_dotenv
 
-# --- Environment Variables ---
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+load_dotenv()
 
-# --- Constants ---
-DB_FILE = "resumes.db"
-PINECONE_INDEX_NAME = "resume-analyzer"
+# --- MySQL Configuration ---
+MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
+MYSQL_USER = os.getenv("MYSQL_USER", "root")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "resume_tracker")
 
-# --- SQLite Functions ---
+# Connection pool for better performance
+connection_pool = None
+
+def init_connection_pool():
+    """Initialize MySQL connection pool."""
+    global connection_pool
+    if connection_pool is None:
+        try:
+            connection_pool = pooling.MySQLConnectionPool(
+                pool_name="resume_pool",
+                pool_size=5,
+                pool_reset_session=True,
+                host=MYSQL_HOST,
+                port=MYSQL_PORT,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                database=MYSQL_DATABASE,
+                autocommit=False
+            )
+        except mysql.connector.Error as err:
+            print(f"Error creating connection pool: {err}")
+            raise
+
 def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_sqlite_db():
-    conn = get_db_connection()
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS resumes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT NOT NULL UNIQUE,
-            resume_text TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-def save_resume_to_db(filename, resume_text):
-    conn = get_db_connection()
+    """Get a connection from the pool."""
+    global connection_pool
+    if connection_pool is None:
+        init_connection_pool()
     try:
-        cursor = conn.execute(
-            "INSERT INTO resumes (filename, resume_text) VALUES (?, ?)",
-            (filename, resume_text)
+        return connection_pool.get_connection()
+    except mysql.connector.Error as err:
+        print(f"Error getting connection from pool: {err}")
+        raise
+
+def init_mysql_db():
+    """Initialize MySQL database and create tables."""
+    # First, create database if it doesn't exist
+    try:
+        conn = mysql.connector.connect(
+            host=MYSQL_HOST,
+            port=MYSQL_PORT,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD
         )
+        cursor = conn.cursor()
+        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DATABASE}")
+        cursor.close()
+        conn.close()
+    except mysql.connector.Error as err:
+        print(f"Error creating database: {err}")
+        raise
+    
+    # Now create tables
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Users table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(255) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_username (username)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ''')
+        
+        # User settings table (JSON string)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INT PRIMARY KEY,
+                settings TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ''')
+        
+        # User-specific resumes
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_resumes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                filename VARCHAR(500),
+                resume_hash VARCHAR(64) NOT NULL,
+                resume_text LONGTEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_user_hash (user_id, resume_hash),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_user_created (user_id, created_at),
+                INDEX idx_user_hash (user_id, resume_hash)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ''')
+        
+        # Cache for full analysis results
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_analysis (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                resume_hash VARCHAR(64) NOT NULL,
+                jd_hash VARCHAR(64) NOT NULL,
+                provider VARCHAR(50),
+                model VARCHAR(100),
+                intensity VARCHAR(50),
+                result_json LONGTEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_analysis (user_id, resume_hash, jd_hash, provider, model, intensity),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_user_time (user_id, created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ''')
+        
+        # Legacy resumes table (optional - for backward compatibility)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS resumes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                filename VARCHAR(500) NOT NULL UNIQUE,
+                resume_text LONGTEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ''')
+        
         conn.commit()
-        return cursor.lastrowid
-    except sqlite3.IntegrityError:
-        # This means a resume with this filename already exists
-        return None
+        print("MySQL database initialized successfully!")
+        
+    except mysql.connector.Error as err:
+        print(f"Error creating tables: {err}")
+        conn.rollback()
+        raise
     finally:
+        cursor.close()
         conn.close()
 
-def get_all_resumes_from_db():
+
+# --- User Auth Functions ---
+def create_user(username: str, password: str):
+    username = (username or '').strip()
+    password = (password or '').strip()
+    if not username or not password:
+        return None
+    pwd_hash = pbkdf2_sha256.hash(password)
     conn = get_db_connection()
-    resumes = conn.execute("SELECT id, filename FROM resumes ORDER BY filename").fetchall()
-    conn.close()
-    return resumes
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s)", (username, pwd_hash))
+        conn.commit()
+        return cursor.lastrowid
+    except mysql.connector.IntegrityError:
+        return None
+    finally:
+        cursor.close()
+        conn.close()
 
-def get_resume_text_by_id(resume_id):
+def authenticate_user(username: str, password: str):
     conn = get_db_connection()
-    resume = conn.execute("SELECT resume_text FROM resumes WHERE id = ?", (resume_id,)).fetchone()
-    conn.close()
-    return resume['resume_text'] if resume else None
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT id, username, password_hash FROM users WHERE username = %s", (username,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        if pbkdf2_sha256.verify(password, row['password_hash']):
+            return {"id": row['id'], "username": row['username']}
+        return None
+    finally:
+        cursor.close()
+        conn.close()
 
-# --- Pinecone Functions ---
-def get_pinecone_index():
-    pc = Pinecone(api_key=PINECONE_API_KEY)
-    return pc.Index(PINECONE_INDEX_NAME)
+def get_user_by_username(username: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT id, username FROM users WHERE username = %s", (username,))
+        row = cursor.fetchone()
+        return {"id": row['id'], "username": row['username']} if row else None
+    finally:
+        cursor.close()
+        conn.close()
 
-def upsert_vectors_to_pinecone(resume_id, resume_text):
-    index = get_pinecone_index()
-    embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
-    
-    # For now, we'll embed and store the whole text as one vector.
-    # This can be expanded to store chunks for RAG.
-    vector = embeddings.embed_query(resume_text)
-    
-    # We use the resume_id from SQLite as the vector's ID in Pinecone
-    index.upsert(vectors=[(str(resume_id), vector)])
-    return True
+def get_user_settings(user_id: int) -> dict:
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT settings FROM user_settings WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            return {}
+        try:
+            import json
+            return json.loads(row['settings'] or '{}')
+        except Exception:
+            return {}
+    finally:
+        cursor.close()
+        conn.close()
+
+def save_user_settings(user_id: int, settings: dict):
+    import json
+    s = json.dumps(settings or {})
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Upsert behavior using INSERT ... ON DUPLICATE KEY UPDATE
+        cursor.execute(
+            """
+            INSERT INTO user_settings (user_id, settings, updated_at) 
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
+            ON DUPLICATE KEY UPDATE settings = %s, updated_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, s, s)
+        )
+        conn.commit()
+        return True
+    finally:
+        cursor.close()
+        conn.close()
+
+# --- User resume storage (per-user, hashed) ---
+def save_user_resume(user_id: int, filename: str, resume_hash: str, resume_text: str):
+    """Upsert a user's resume content keyed by content hash to avoid duplicates.
+
+    Returns the row id (existing or new).
+    """
+    if not user_id or not resume_hash or not resume_text:
+        return None
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Try to insert; if exists due to unique constraint, get existing id
+        cursor.execute(
+            "INSERT IGNORE INTO user_resumes (user_id, filename, resume_hash, resume_text) VALUES (%s, %s, %s, %s)",
+            (user_id, filename, resume_hash, resume_text)
+        )
+        conn.commit()
+        
+        if cursor.rowcount == 0:
+            # Already exists, retrieve id
+            cursor.execute(
+                "SELECT id FROM user_resumes WHERE user_id = %s AND resume_hash = %s",
+                (user_id, resume_hash)
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+        return cursor.lastrowid
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_user_resumes(user_id: int):
+    """List saved resumes for a user with metadata for sidebar selection."""
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, filename, resume_hash, created_at FROM user_resumes WHERE user_id = %s ORDER BY created_at DESC",
+            (user_id,)
+        )
+        rows = cursor.fetchall()
+        return rows
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_user_resume_by_id(user_id: int, user_resume_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, filename, resume_hash, resume_text, created_at FROM user_resumes WHERE user_id = %s AND id = %s",
+            (user_id, user_resume_id)
+        )
+        row = cursor.fetchone()
+        return row if row else None
+    finally:
+        cursor.close()
+        conn.close()
+
+# --- Analysis caching ---
+def get_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider: str, model: str, intensity: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT result_json FROM user_analysis
+            WHERE user_id = %s AND resume_hash = %s AND jd_hash = %s AND provider = %s AND model = %s AND intensity = %s
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (user_id, resume_hash, jd_hash, provider or '', model or '', intensity or 'full')
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        import json
+        try:
+            return json.loads(row['result_json'])
+        except Exception:
+            return None
+    finally:
+        cursor.close()
+        conn.close()
+
+def save_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider: str, model: str, intensity: str, result: dict):
+    if not user_id or not resume_hash or not jd_hash or not result:
+        return False
+    import json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        result_json = json.dumps(result)
+        # Upsert using INSERT ... ON DUPLICATE KEY UPDATE
+        cursor.execute(
+            """
+            INSERT INTO user_analysis 
+            (user_id, resume_hash, jd_hash, provider, model, intensity, result_json, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON DUPLICATE KEY UPDATE result_json = %s, created_at = CURRENT_TIMESTAMP
+            """,
+            (
+                user_id, resume_hash, jd_hash, provider or '', model or '', intensity or 'full', result_json,
+                result_json
+            )
+        )
+        conn.commit()
+        return True
+    finally:
+        cursor.close()
+        conn.close()
+
+# --- Pinecone Functions (kept for compatibility) ---
+# These can remain empty or be implemented if needed
