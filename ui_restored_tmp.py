@@ -100,6 +100,9 @@ def setup_sidebar() -> Dict:
             placeholder="gsk_..."
         )
         
+        # Help link for getting Groq API key
+        st.caption("🎥 [**Watch: How to Get Groq API Key**](https://www.youtube.com/watch?v=nt1PJu47nTk) | [Get Free API Key](https://console.groq.com/keys)")
+        
         # If user didn't provide a key, fall back to .env
         if not api_key or api_key.strip() == "":
             api_key = os.getenv("GROQ_API_KEY", "")
