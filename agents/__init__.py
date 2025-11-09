@@ -34,9 +34,9 @@ class ResumeAnalysisAgent(ResumeAnalyzer):
         return self._improver_agent
     
     # Delegate methods to sub-agents for backward compatibility
-    def ask_question(self, question):
+    def ask_question(self, question, chat_history=None):
         """Delegate to interview agent."""
-        return self.interview_agent.ask_question(question)
+        return self.interview_agent.ask_question(question, chat_history)
     
     def answer_interview_question(self, question: str) -> str:
         """Delegate to interview agent."""

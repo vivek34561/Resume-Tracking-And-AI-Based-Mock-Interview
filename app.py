@@ -502,10 +502,10 @@ def analyze_resume(agent, resume_file, role, custom_jd, quick: bool = False):
             st.error(f"Error analyzing resume: {e}")
 
 
-def ask_question(agent, question):
+def ask_question(agent, question, chat_history=None):
     try:
         with st.spinner("Generating response..."):
-            response = agent.ask_question(question)
+            response = agent.ask_question(question, chat_history)
             return response
     except Exception as e:
         return f"Error:{e}"
@@ -836,7 +836,7 @@ def main():
         if st.session_state.resume_analyzed and st.session_state.resume_agent:
             ui.resume_qa_section(
                 has_resume  = True,
-                ask_question_func = lambda q: ask_question(st.session_state.resume_agent , q)
+                ask_question_func = lambda q, h=None: ask_question(st.session_state.resume_agent, q, h)
                 
             )
         else:

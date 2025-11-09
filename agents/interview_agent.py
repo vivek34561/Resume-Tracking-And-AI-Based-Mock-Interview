@@ -12,10 +12,17 @@ class InterviewAgent:
         """Initialize with a ResumeAnalyzer instance."""
         self.analyzer = resume_analyzer
     
-    def ask_question(self, question):
-        """Answer questions about the resume using RAG."""
+    def ask_question(self, question, chat_history=None):
+        """Answer questions about the resume using RAG with chat history context.
+        
+        Args:
+            question: The user's current question
+            chat_history: List of previous messages [{'role': 'user'/'assistant', 'content': '...'}]
+        """
         if not self.analyzer.resume_text:
             return "Please analyze a resume first."
+        
+        chat_history = chat_history or []
         
         # Lazily build RAG store on first use
         if not self.analyzer.rag_vectorstore:
@@ -73,12 +80,26 @@ class InterviewAgent:
             
             context += strength_info
         
+        # Build conversation context from chat history
+        conversation_context = ""
+        if chat_history and len(chat_history) > 0:
+            # Include last 4 exchanges (8 messages) for context
+            recent_history = chat_history[-8:] if len(chat_history) > 8 else chat_history
+            conversation_context = "\n\nPrevious Conversation:\n"
+            for msg in recent_history:
+                role = "User" if msg['role'] == 'user' else "Assistant"
+                conversation_context += f"{role}: {msg['content']}\n"
+            conversation_context += "\n"
+        
         prompt = (
-            "You are a helpful AI assistant analyzing a resume. Answer the user's question based on the resume content provided.\n"
+            "You are a helpful AI assistant analyzing a resume. Answer the user's question based on the resume content and conversation history provided.\n"
             "Be conversational, friendly, and helpful. Provide specific details from the resume.\n"
+            "Use the conversation history to understand context and give relevant follow-up answers.\n"
+            "If referring to something mentioned earlier, acknowledge it naturally.\n"
             "If you greet the user (hi/hello), respond warmly and ask how you can help with the resume.\n\n"
-            f"Resume Content:\n{context}\n\n"
-            f"User Question: {question}\n\n"
+            f"Resume Content:\n{context}\n"
+            f"{conversation_context}"
+            f"Current Question: {question}\n\n"
             "Answer:"
         )
         return self.analyzer.llm_chat(messages=[{"role": "user", "content": prompt}], max_tokens=2000).strip()

@@ -458,9 +458,10 @@ def resume_qa_section(has_resume: bool, ask_question_func: Callable):
                 'content': user_question
             })
             
-            # Get bot response
+            # Get bot response with chat history context
             with st.spinner("🤔 Thinking..."):
-                response = ask_question_func(user_question)
+                # Pass chat history (excluding the just-added user message for context)
+                response = ask_question_func(user_question, st.session_state.chat_history[:-1])
             
             # Add bot response to history
             st.session_state.chat_history.append({
