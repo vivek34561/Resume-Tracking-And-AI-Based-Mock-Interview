@@ -5,15 +5,44 @@ from mysql.connector import pooling
 import os
 from passlib.hash import pbkdf2_sha256
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 load_dotenv()
 
 # --- MySQL Configuration ---
-MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
-MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
-MYSQL_USER = os.getenv("MYSQL_USER", "root")
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
-MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "resume_tracker")
+# Support both individual env vars and DATABASE_URL (Heroku/Railway style)
+def parse_database_config():
+    """Parse MySQL configuration from env vars or DATABASE_URL."""
+    # Check for ClearDB or JawsDB URL (Heroku add-ons)
+    database_url = os.getenv("CLEARDB_DATABASE_URL") or os.getenv("JAWSDB_URL") or os.getenv("DATABASE_URL")
+    
+    if database_url:
+        # Parse URL format: mysql://user:password@host:port/database
+        parsed = urlparse(database_url)
+        return {
+            "host": parsed.hostname or "localhost",
+            "port": parsed.port or 3306,
+            "user": parsed.username or "root",
+            "password": parsed.password or "",
+            "database": parsed.path.lstrip("/") if parsed.path else "resume_tracker"
+        }
+    else:
+        # Use individual environment variables
+        return {
+            "host": os.getenv("MYSQL_HOST", "localhost"),
+            "port": int(os.getenv("MYSQL_PORT", "3306")),
+            "user": os.getenv("MYSQL_USER", "root"),
+            "password": os.getenv("MYSQL_PASSWORD", ""),
+            "database": os.getenv("MYSQL_DATABASE", "resume_tracker")
+        }
+
+# Get MySQL configuration
+db_config = parse_database_config()
+MYSQL_HOST = db_config["host"]
+MYSQL_PORT = db_config["port"]
+MYSQL_USER = db_config["user"]
+MYSQL_PASSWORD = db_config["password"]
+MYSQL_DATABASE = db_config["database"]
 
 # Connection pool for better performance
 connection_pool = None
