@@ -107,10 +107,10 @@ def init_connection_pool():
                 
                 connection_pool = psycopg2.pool.SimpleConnectionPool(
                     1,  # minconn
-                    10,  # maxconn
+                    20,  # maxconn - increased from 10 to 20
                     db_url
                 )
-                print("✅ PostgreSQL connection pool created")
+                print("✅ PostgreSQL connection pool created (1-20 connections)")
             else:
                 # MySQL connection pool
                 connection_pool = pooling.MySQLConnectionPool(
@@ -144,10 +144,18 @@ def get_db_connection():
         raise
 
 def return_connection(conn):
-    """Return a connection to the pool (PostgreSQL only)."""
+    """Return a connection to the pool (works for both PostgreSQL and MySQL)."""
     global connection_pool
-    if DB_TYPE == "postgresql" and connection_pool and conn:
-        connection_pool.putconn(conn)
+    if conn is None:
+        return
+    
+    if DB_TYPE == "postgresql":
+        # PostgreSQL: Return to pool, don't close
+        if connection_pool:
+            connection_pool.putconn(conn)
+    else:
+        # MySQL: Actually close the connection (pool handles it)
+        return_connection(conn)
 
 def get_cursor(conn):
     """Get a cursor that returns dictionary-like results for both PostgreSQL and MySQL."""
@@ -263,7 +271,7 @@ def init_mysql_db():
             cursor = conn.cursor()
             cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DATABASE}")
             cursor.close()
-            conn.close()
+            return_connection(conn)
         except mysql.connector.Error as err:
             print(f"Error creating MySQL database: {err}")
             # Don't raise - database might already exist
@@ -355,7 +363,7 @@ def init_mysql_db():
             raise
         finally:
             cursor.close()
-            conn.close()
+            return_connection(conn)
 
 
 # --- User Auth Functions ---
@@ -375,7 +383,7 @@ def create_user(username: str, password: str):
         return None
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 def authenticate_user(username: str, password: str):
     conn = get_db_connection()
@@ -390,7 +398,7 @@ def authenticate_user(username: str, password: str):
         return None
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 def get_user_by_username(username: str):
     conn = get_db_connection()
@@ -401,7 +409,7 @@ def get_user_by_username(username: str):
         return {"id": row['id'], "username": row['username']} if row else None
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 
 # --- Google OAuth Functions ---
@@ -475,7 +483,7 @@ def create_or_update_google_user(email: str, google_id: str, name: str = None, p
         return None
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 
 def get_user_by_google_id(google_id: str):
@@ -498,7 +506,7 @@ def get_user_by_google_id(google_id: str):
         return None
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 
 def get_user_by_email(email: str):
@@ -520,7 +528,7 @@ def get_user_by_email(email: str):
         return None
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 
 def get_user_settings(user_id: int) -> dict:
@@ -538,7 +546,7 @@ def get_user_settings(user_id: int) -> dict:
             return {}
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 def save_user_settings(user_id: int, settings: dict):
     import json
@@ -559,7 +567,7 @@ def save_user_settings(user_id: int, settings: dict):
         return True
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 # --- User resume storage (per-user, hashed) ---
 def save_user_resume(user_id: int, filename: str, resume_hash: str, resume_text: str):
@@ -590,7 +598,7 @@ def save_user_resume(user_id: int, filename: str, resume_hash: str, resume_text:
         return cursor.lastrowid
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 def get_user_resumes(user_id: int):
     """List saved resumes for a user with metadata for sidebar selection."""
@@ -605,7 +613,7 @@ def get_user_resumes(user_id: int):
         return rows
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 def get_user_resume_by_id(user_id: int, user_resume_id: int):
     conn = get_db_connection()
@@ -619,7 +627,7 @@ def get_user_resume_by_id(user_id: int, user_resume_id: int):
         return row if row else None
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 # --- Analysis caching ---
 def get_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider: str, model: str, intensity: str):
@@ -644,7 +652,7 @@ def get_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider: 
             return None
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 def save_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider: str, model: str, intensity: str, result: dict):
     if not user_id or not resume_hash or not jd_hash or not result:
@@ -671,7 +679,7 @@ def save_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider:
         return True
     finally:
         cursor.close()
-        conn.close()
+        return_connection(conn)
 
 # --- Pinecone Functions (kept for compatibility) ---
 # These can remain empty or be implemented if needed
