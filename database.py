@@ -568,15 +568,27 @@ def save_user_settings(user_id: int, settings: dict):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Upsert behavior using INSERT ... ON DUPLICATE KEY UPDATE
-        cursor.execute(
-            """
-            INSERT INTO user_settings (user_id, settings, updated_at) 
-            VALUES (%s, %s, CURRENT_TIMESTAMP)
-            ON DUPLICATE KEY UPDATE settings = %s, updated_at = CURRENT_TIMESTAMP
-            """,
-            (user_id, s, s)
-        )
+        if DB_TYPE == "postgresql":
+            # PostgreSQL: Use ON CONFLICT
+            cursor.execute(
+                """
+                INSERT INTO user_settings (user_id, settings, updated_at) 
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) 
+                DO UPDATE SET settings = EXCLUDED.settings, updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, s)
+            )
+        else:
+            # MySQL: Use ON DUPLICATE KEY UPDATE
+            cursor.execute(
+                """
+                INSERT INTO user_settings (user_id, settings, updated_at) 
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON DUPLICATE KEY UPDATE settings = %s, updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, s, s)
+            )
         conn.commit()
         return True
     finally:
@@ -676,19 +688,33 @@ def save_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider:
     cursor = conn.cursor()
     try:
         result_json = json.dumps(result)
-        # Upsert using INSERT ... ON DUPLICATE KEY UPDATE
-        cursor.execute(
-            """
-            INSERT INTO user_analysis 
-            (user_id, resume_hash, jd_hash, provider, model, intensity, result_json, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON DUPLICATE KEY UPDATE result_json = %s, created_at = CURRENT_TIMESTAMP
-            """,
-            (
-                user_id, resume_hash, jd_hash, provider or '', model or '', intensity or 'full', result_json,
-                result_json
+        
+        if DB_TYPE == "postgresql":
+            # PostgreSQL: Use ON CONFLICT
+            cursor.execute(
+                """
+                INSERT INTO user_analysis 
+                (user_id, resume_hash, jd_hash, provider, model, intensity, result_json, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id, resume_hash, jd_hash, provider, model, intensity) 
+                DO UPDATE SET result_json = EXCLUDED.result_json, created_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, resume_hash, jd_hash, provider or '', model or '', intensity or 'full', result_json)
             )
-        )
+        else:
+            # MySQL: Use ON DUPLICATE KEY UPDATE
+            cursor.execute(
+                """
+                INSERT INTO user_analysis 
+                (user_id, resume_hash, jd_hash, provider, model, intensity, result_json, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON DUPLICATE KEY UPDATE result_json = %s, created_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    user_id, resume_hash, jd_hash, provider or '', model or '', intensity or 'full', result_json,
+                    result_json
+                )
+            )
         conn.commit()
         return True
     finally:
