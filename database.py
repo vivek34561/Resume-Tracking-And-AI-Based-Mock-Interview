@@ -149,6 +149,15 @@ def return_connection(conn):
     if DB_TYPE == "postgresql" and connection_pool and conn:
         connection_pool.putconn(conn)
 
+def get_cursor(conn):
+    """Get a cursor that returns dictionary-like results for both PostgreSQL and MySQL."""
+    if DB_TYPE == "postgresql":
+        # PostgreSQL: Use RealDictCursor to get dict-like results
+        return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    else:
+        # MySQL: Use dictionary=True
+        return conn.cursor(dictionary=True)
+
 def init_mysql_db():
     """Initialize database and create tables (supports both PostgreSQL and MySQL)."""
     
@@ -370,7 +379,7 @@ def create_user(username: str, password: str):
 
 def authenticate_user(username: str, password: str):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = get_cursor(conn)
     try:
         cursor.execute("SELECT id, username, password_hash FROM users WHERE username = %s", (username,))
         row = cursor.fetchone()
@@ -385,7 +394,7 @@ def authenticate_user(username: str, password: str):
 
 def get_user_by_username(username: str):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = get_cursor(conn)
     try:
         cursor.execute("SELECT id, username FROM users WHERE username = %s", (username,))
         row = cursor.fetchone()
@@ -402,7 +411,7 @@ def create_or_update_google_user(email: str, google_id: str, name: str = None, p
     Returns user dict with id, email, name, etc.
     """
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = get_cursor(conn)
     try:
         # Check if user with this google_id already exists
         cursor.execute("SELECT * FROM users WHERE google_id = %s", (google_id,))
@@ -472,7 +481,7 @@ def create_or_update_google_user(email: str, google_id: str, name: str = None, p
 def get_user_by_google_id(google_id: str):
     """Get user by Google ID."""
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = get_cursor(conn)
     try:
         cursor.execute("SELECT * FROM users WHERE google_id = %s", (google_id,))
         user = cursor.fetchone()
@@ -495,7 +504,7 @@ def get_user_by_google_id(google_id: str):
 def get_user_by_email(email: str):
     """Get user by email."""
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = get_cursor(conn)
     try:
         cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
         user = cursor.fetchone()
@@ -516,7 +525,7 @@ def get_user_by_email(email: str):
 
 def get_user_settings(user_id: int) -> dict:
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = get_cursor(conn)
     try:
         cursor.execute("SELECT settings FROM user_settings WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
@@ -586,7 +595,7 @@ def save_user_resume(user_id: int, filename: str, resume_hash: str, resume_text:
 def get_user_resumes(user_id: int):
     """List saved resumes for a user with metadata for sidebar selection."""
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = get_cursor(conn)
     try:
         cursor.execute(
             "SELECT id, filename, resume_hash, created_at FROM user_resumes WHERE user_id = %s ORDER BY created_at DESC",
@@ -600,7 +609,7 @@ def get_user_resumes(user_id: int):
 
 def get_user_resume_by_id(user_id: int, user_resume_id: int):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = get_cursor(conn)
     try:
         cursor.execute(
             "SELECT id, filename, resume_hash, resume_text, created_at FROM user_resumes WHERE user_id = %s AND id = %s",
@@ -615,7 +624,7 @@ def get_user_resume_by_id(user_id: int, user_resume_id: int):
 # --- Analysis caching ---
 def get_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider: str, model: str, intensity: str):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    cursor = get_cursor(conn)
     try:
         cursor.execute(
             """
