@@ -1,7 +1,7 @@
-# database_postgres.py - PostgreSQL version
+# database.py
 
-import psycopg2
-from psycopg2 import pool, extras
+import mysql.connector
+from mysql.connector import pooling
 import os
 from passlib.hash import pbkdf2_sha256
 from dotenv import load_dotenv
@@ -9,36 +9,62 @@ from urllib.parse import urlparse
 
 load_dotenv()
 
-# --- PostgreSQL Configuration ---
-connection_pool = None
-
-def parse_database_url():
-    """Parse PostgreSQL DATABASE_URL from Heroku."""
-    database_url = os.getenv("DATABASE_URL")
+# --- MySQL Configuration ---
+# Support both individual env vars and DATABASE_URL (Heroku/Railway style)
+def parse_database_config():
+    """Parse MySQL configuration from env vars or DATABASE_URL."""
+    # Check for ClearDB or JawsDB URL (Heroku add-ons)
+    database_url = os.getenv("CLEARDB_DATABASE_URL") or os.getenv("JAWSDB_URL") or os.getenv("DATABASE_URL")
     
     if database_url:
-        # Heroku Postgres URLs start with postgres://, but psycopg2 needs postgresql://
-        if database_url.startswith("postgres://"):
-            database_url = database_url.replace("postgres://", "postgresql://", 1)
-        return database_url
-    
-    # Fallback to individual env vars (for local development)
-    return f"postgresql://{os.getenv('DB_USER', 'postgres')}:{os.getenv('DB_PASSWORD', '')}@{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}/{os.getenv('DB_NAME', 'resume_tracker')}"
+        # Parse URL format: mysql://user:password@host:port/database
+        parsed = urlparse(database_url)
+        return {
+            "host": parsed.hostname or "localhost",
+            "port": parsed.port or 3306,
+            "user": parsed.username or "root",
+            "password": parsed.password or "",
+            "database": parsed.path.lstrip("/") if parsed.path else "resume_tracker"
+        }
+    else:
+        # Use individual environment variables
+        return {
+            "host": os.getenv("MYSQL_HOST", "localhost"),
+            "port": int(os.getenv("MYSQL_PORT", "3306")),
+            "user": os.getenv("MYSQL_USER", "root"),
+            "password": os.getenv("MYSQL_PASSWORD", ""),
+            "database": os.getenv("MYSQL_DATABASE", "resume_tracker")
+        }
+
+# Get MySQL configuration
+db_config = parse_database_config()
+MYSQL_HOST = db_config["host"]
+MYSQL_PORT = db_config["port"]
+MYSQL_USER = db_config["user"]
+MYSQL_PASSWORD = db_config["password"]
+MYSQL_DATABASE = db_config["database"]
+
+# Connection pool for better performance
+connection_pool = None
 
 def init_connection_pool():
-    """Initialize PostgreSQL connection pool."""
+    """Initialize MySQL connection pool."""
     global connection_pool
     if connection_pool is None:
         try:
-            database_url = parse_database_url()
-            connection_pool = psycopg2.pool.SimpleConnectionPool(
-                1,  # minconn
-                10,  # maxconn
-                database_url
+            connection_pool = pooling.MySQLConnectionPool(
+                pool_name="resume_pool",
+                pool_size=5,
+                pool_reset_session=True,
+                host=MYSQL_HOST,
+                port=MYSQL_PORT,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                database=MYSQL_DATABASE,
+                autocommit=False
             )
-            print("✅ PostgreSQL connection pool created successfully")
-        except Exception as err:
-            print(f"❌ Error creating connection pool: {err}")
+        except mysql.connector.Error as err:
+            print(f"Error creating connection pool: {err}")
             raise
 
 def get_db_connection():
@@ -47,20 +73,30 @@ def get_db_connection():
     if connection_pool is None:
         init_connection_pool()
     try:
-        conn = connection_pool.getconn()
-        return conn
-    except Exception as err:
+        return connection_pool.get_connection()
+    except mysql.connector.Error as err:
         print(f"Error getting connection from pool: {err}")
         raise
 
-def return_connection(conn):
-    """Return a connection to the pool."""
-    global connection_pool
-    if connection_pool and conn:
-        connection_pool.putconn(conn)
-
 def init_mysql_db():
-    """Initialize PostgreSQL database and create tables."""
+    """Initialize MySQL database and create tables."""
+    # First, create database if it doesn't exist
+    try:
+        conn = mysql.connector.connect(
+            host=MYSQL_HOST,
+            port=MYSQL_PORT,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD
+        )
+        cursor = conn.cursor()
+        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DATABASE}")
+        cursor.close()
+        conn.close()
+    except mysql.connector.Error as err:
+        print(f"Error creating database: {err}")
+        raise
+    
+    # Now create tables
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -68,87 +104,86 @@ def init_mysql_db():
         # Users table - Updated to support both traditional and Google OAuth
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
+                id INT AUTO_INCREMENT PRIMARY KEY,
                 username VARCHAR(255) UNIQUE,
                 password_hash VARCHAR(255),
                 email VARCHAR(255) UNIQUE,
                 google_id VARCHAR(255) UNIQUE,
                 full_name VARCHAR(255),
                 profile_picture TEXT,
-                auth_type VARCHAR(20) DEFAULT 'traditional',
+                auth_type ENUM('traditional', 'google') DEFAULT 'traditional',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_login TIMESTAMP NULL
-            )
+                last_login TIMESTAMP NULL,
+                INDEX idx_username (username),
+                INDEX idx_email (email),
+                INDEX idx_google_id (google_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ''')
-        
-        # Create indexes for users table
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_username ON users(username)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_email ON users(email)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_id ON users(google_id)')
         
         # User settings table (JSON string)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_settings (
-                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                user_id INT PRIMARY KEY,
                 settings TEXT NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ''')
         
         # User-specific resumes
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_resumes (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
                 filename VARCHAR(500),
                 resume_hash VARCHAR(64) NOT NULL,
-                resume_text TEXT NOT NULL,
+                resume_text LONGTEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (user_id, resume_hash)
-            )
+                UNIQUE KEY unique_user_hash (user_id, resume_hash),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_user_created (user_id, created_at),
+                INDEX idx_user_hash (user_id, resume_hash)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ''')
-        
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_created ON user_resumes(user_id, created_at)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_hash ON user_resumes(user_id, resume_hash)')
         
         # Cache for full analysis results
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_analysis (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
                 resume_hash VARCHAR(64) NOT NULL,
                 jd_hash VARCHAR(64) NOT NULL,
                 provider VARCHAR(50),
                 model VARCHAR(100),
                 intensity VARCHAR(50),
-                result_json TEXT NOT NULL,
+                result_json LONGTEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (user_id, resume_hash, jd_hash, provider, model, intensity)
-            )
+                UNIQUE KEY unique_analysis (user_id, resume_hash, jd_hash, provider, model, intensity),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_user_time (user_id, created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ''')
-        
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_time ON user_analysis(user_id, created_at)')
         
         # Legacy resumes table (optional - for backward compatibility)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS resumes (
-                id SERIAL PRIMARY KEY,
+                id INT AUTO_INCREMENT PRIMARY KEY,
                 filename VARCHAR(500) NOT NULL UNIQUE,
-                resume_text TEXT NOT NULL,
+                resume_text LONGTEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ''')
         
         conn.commit()
-        print("✅ PostgreSQL database initialized successfully!")
+        print("MySQL database initialized successfully!")
         
-    except Exception as err:
-        print(f"❌ Error creating tables: {err}")
+    except mysql.connector.Error as err:
+        print(f"Error creating tables: {err}")
         conn.rollback()
         raise
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 
 # --- User Auth Functions ---
@@ -161,19 +196,18 @@ def create_user(username: str, password: str):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s) RETURNING id", (username, pwd_hash))
-        user_id = cursor.fetchone()[0]
+        cursor.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s)", (username, pwd_hash))
         conn.commit()
-        return user_id
-    except psycopg2.IntegrityError:
+        return cursor.lastrowid
+    except mysql.connector.IntegrityError:
         return None
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 def authenticate_user(username: str, password: str):
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("SELECT id, username, password_hash FROM users WHERE username = %s", (username,))
         row = cursor.fetchone()
@@ -184,18 +218,18 @@ def authenticate_user(username: str, password: str):
         return None
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 def get_user_by_username(username: str):
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("SELECT id, username FROM users WHERE username = %s", (username,))
         row = cursor.fetchone()
         return {"id": row['id'], "username": row['username']} if row else None
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 
 # --- Google OAuth Functions ---
@@ -205,7 +239,7 @@ def create_or_update_google_user(email: str, google_id: str, name: str = None, p
     Returns user dict with id, email, name, etc.
     """
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor = conn.cursor(dictionary=True)
     try:
         # Check if user with this google_id already exists
         cursor.execute("SELECT * FROM users WHERE google_id = %s", (google_id,))
@@ -219,10 +253,11 @@ def create_or_update_google_user(email: str, google_id: str, name: str = None, p
                     full_name = %s,
                     profile_picture = %s
                 WHERE google_id = %s
-                RETURNING *
             """, (name, picture, google_id))
-            user = cursor.fetchone()
             conn.commit()
+            # Fetch updated user
+            cursor.execute("SELECT * FROM users WHERE google_id = %s", (google_id,))
+            user = cursor.fetchone()
         else:
             # Check if email already exists (maybe from traditional auth)
             cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
@@ -238,19 +273,20 @@ def create_or_update_google_user(email: str, google_id: str, name: str = None, p
                         profile_picture = %s,
                         last_login = CURRENT_TIMESTAMP
                     WHERE email = %s
-                    RETURNING *
                 """, (google_id, name, picture, email))
-                user = cursor.fetchone()
                 conn.commit()
+                cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+                user = cursor.fetchone()
             else:
                 # Create new user
                 cursor.execute("""
                     INSERT INTO users (email, google_id, full_name, profile_picture, auth_type, last_login)
                     VALUES (%s, %s, %s, %s, 'google', CURRENT_TIMESTAMP)
-                    RETURNING *
                 """, (email, google_id, name, picture))
-                user = cursor.fetchone()
                 conn.commit()
+                user_id = cursor.lastrowid
+                cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+                user = cursor.fetchone()
         
         return {
             "id": user['id'],
@@ -261,19 +297,19 @@ def create_or_update_google_user(email: str, google_id: str, name: str = None, p
             "google_id": user['google_id'],
             "auth_type": user['auth_type']
         }
-    except Exception as e:
+    except mysql.connector.Error as e:
         conn.rollback()
         print(f"Error creating/updating Google user: {e}")
         return None
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 
 def get_user_by_google_id(google_id: str):
     """Get user by Google ID."""
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("SELECT * FROM users WHERE google_id = %s", (google_id,))
         user = cursor.fetchone()
@@ -290,13 +326,13 @@ def get_user_by_google_id(google_id: str):
         return None
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 
 def get_user_by_email(email: str):
     """Get user by email."""
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
         user = cursor.fetchone()
@@ -312,12 +348,12 @@ def get_user_by_email(email: str):
         return None
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 
 def get_user_settings(user_id: int) -> dict:
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("SELECT settings FROM user_settings WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
@@ -330,7 +366,7 @@ def get_user_settings(user_id: int) -> dict:
             return {}
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 def save_user_settings(user_id: int, settings: dict):
     import json
@@ -338,13 +374,12 @@ def save_user_settings(user_id: int, settings: dict):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Upsert behavior using INSERT ... ON CONFLICT
+        # Upsert behavior using INSERT ... ON DUPLICATE KEY UPDATE
         cursor.execute(
             """
             INSERT INTO user_settings (user_id, settings, updated_at) 
             VALUES (%s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (user_id) 
-            DO UPDATE SET settings = %s, updated_at = CURRENT_TIMESTAMP
+            ON DUPLICATE KEY UPDATE settings = %s, updated_at = CURRENT_TIMESTAMP
             """,
             (user_id, s, s)
         )
@@ -352,7 +387,7 @@ def save_user_settings(user_id: int, settings: dict):
         return True
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 # --- User resume storage (per-user, hashed) ---
 def save_user_resume(user_id: int, filename: str, resume_hash: str, resume_text: str):
@@ -365,57 +400,59 @@ def save_user_resume(user_id: int, filename: str, resume_hash: str, resume_text:
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Try to insert; if conflict, update and return id
+        # Try to insert; if exists due to unique constraint, get existing id
         cursor.execute(
-            """
-            INSERT INTO user_resumes (user_id, filename, resume_hash, resume_text) 
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (user_id, resume_hash) 
-            DO UPDATE SET filename = %s
-            RETURNING id
-            """,
-            (user_id, filename, resume_hash, resume_text, filename)
+            "INSERT IGNORE INTO user_resumes (user_id, filename, resume_hash, resume_text) VALUES (%s, %s, %s, %s)",
+            (user_id, filename, resume_hash, resume_text)
         )
-        row_id = cursor.fetchone()[0]
         conn.commit()
-        return row_id
+        
+        if cursor.rowcount == 0:
+            # Already exists, retrieve id
+            cursor.execute(
+                "SELECT id FROM user_resumes WHERE user_id = %s AND resume_hash = %s",
+                (user_id, resume_hash)
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+        return cursor.lastrowid
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 def get_user_resumes(user_id: int):
     """List saved resumes for a user with metadata for sidebar selection."""
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute(
             "SELECT id, filename, resume_hash, created_at FROM user_resumes WHERE user_id = %s ORDER BY created_at DESC",
             (user_id,)
         )
         rows = cursor.fetchall()
-        return [dict(row) for row in rows]
+        return rows
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 def get_user_resume_by_id(user_id: int, user_resume_id: int):
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute(
             "SELECT id, filename, resume_hash, resume_text, created_at FROM user_resumes WHERE user_id = %s AND id = %s",
             (user_id, user_resume_id)
         )
         row = cursor.fetchone()
-        return dict(row) if row else None
+        return row if row else None
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 # --- Analysis caching ---
 def get_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider: str, model: str, intensity: str):
     conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute(
             """
@@ -435,7 +472,7 @@ def get_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider: 
             return None
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 def save_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider: str, model: str, intensity: str, result: dict):
     if not user_id or not resume_hash or not jd_hash or not result:
@@ -445,14 +482,13 @@ def save_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider:
     cursor = conn.cursor()
     try:
         result_json = json.dumps(result)
-        # Upsert using INSERT ... ON CONFLICT
+        # Upsert using INSERT ... ON DUPLICATE KEY UPDATE
         cursor.execute(
             """
             INSERT INTO user_analysis 
             (user_id, resume_hash, jd_hash, provider, model, intensity, result_json, created_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (user_id, resume_hash, jd_hash, provider, model, intensity)
-            DO UPDATE SET result_json = %s, created_at = CURRENT_TIMESTAMP
+            ON DUPLICATE KEY UPDATE result_json = %s, created_at = CURRENT_TIMESTAMP
             """,
             (
                 user_id, resume_hash, jd_hash, provider or '', model or '', intensity or 'full', result_json,
@@ -463,7 +499,7 @@ def save_cached_analysis(user_id: int, resume_hash: str, jd_hash: str, provider:
         return True
     finally:
         cursor.close()
-        return_connection(conn)
+        conn.close()
 
 # --- Pinecone Functions (kept for compatibility) ---
 # These can remain empty or be implemented if needed
