@@ -459,15 +459,29 @@ def create_or_update_google_user(email: str, google_id: str, name: str = None, p
                 user = cursor.fetchone()
             else:
                 # Create new user
-                cursor.execute("""
-                    INSERT INTO users (email, google_id, full_name, profile_picture, auth_type, last_login)
-                    VALUES (%s, %s, %s, %s, 'google', CURRENT_TIMESTAMP)
-                """, (email, google_id, name, picture))
-                conn.commit()
-                user_id = cursor.lastrowid
+                if DB_TYPE == "postgresql":
+                    cursor.execute("""
+                        INSERT INTO users (email, google_id, full_name, profile_picture, auth_type, last_login)
+                        VALUES (%s, %s, %s, %s, 'google', CURRENT_TIMESTAMP)
+                        RETURNING id
+                    """, (email, google_id, name, picture))
+                    conn.commit()
+                    user_id = cursor.fetchone()['id']
+                else:
+                    cursor.execute("""
+                        INSERT INTO users (email, google_id, full_name, profile_picture, auth_type, last_login)
+                        VALUES (%s, %s, %s, %s, 'google', CURRENT_TIMESTAMP)
+                    """, (email, google_id, name, picture))
+                    conn.commit()
+                    user_id = cursor.lastrowid
+                
                 cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
                 user = cursor.fetchone()
         
+        if not user:
+            print(f"❌ Failed to create/retrieve user")
+            return None
+            
         return {
             "id": user['id'],
             "username": user.get('username') or user['email'].split('@')[0],
@@ -477,9 +491,9 @@ def create_or_update_google_user(email: str, google_id: str, name: str = None, p
             "google_id": user['google_id'],
             "auth_type": user['auth_type']
         }
-    except mysql.connector.Error as e:
+    except Exception as e:
         conn.rollback()
-        print(f"Error creating/updating Google user: {e}")
+        print(f"❌ Error creating/updating Google user: {e}")
         return None
     finally:
         cursor.close()
