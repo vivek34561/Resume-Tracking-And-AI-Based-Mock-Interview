@@ -9,62 +9,124 @@ from urllib.parse import urlparse
 
 load_dotenv()
 
-# --- MySQL Configuration ---
-# Support both individual env vars and DATABASE_URL (Heroku/Railway style)
+# --- Database Configuration ---
+# Support both PostgreSQL (Heroku) and MySQL (local/JawsDB)
 def parse_database_config():
-    """Parse MySQL configuration from env vars or DATABASE_URL."""
-    # Check for ClearDB or JawsDB URL (Heroku add-ons)
-    database_url = os.getenv("CLEARDB_DATABASE_URL") or os.getenv("JAWSDB_URL") or os.getenv("DATABASE_URL")
+    """Parse database configuration from env vars or DATABASE_URL."""
+    # PRIORITY: Check for PostgreSQL first (Heroku Postgres)
+    database_url = os.getenv("DATABASE_URL")
+    
+    """Parse database configuration from env vars or DATABASE_URL."""
+    # PRIORITY: Check for PostgreSQL first (Heroku Postgres)
+    database_url = os.getenv("DATABASE_URL")
     
     if database_url:
-        # Parse URL format: mysql://user:password@host:port/database
-        parsed = urlparse(database_url)
+        # Check if it's PostgreSQL or MySQL
+        if database_url.startswith("postgres://") or database_url.startswith("postgresql://"):
+            # It's PostgreSQL - Heroku Postgres detected!
+            print("🐘 Using PostgreSQL (Heroku Postgres)")
+            return {
+                "type": "postgresql",
+                "url": database_url
+            }
+        else:
+            # It's MySQL
+            print("🐬 Using MySQL from DATABASE_URL")
+            parsed = urlparse(database_url)
+            return {
+                "type": "mysql",
+                "host": parsed.hostname or "localhost",
+                "port": parsed.port or 3306,
+                "user": parsed.username or "root",
+                "password": parsed.password or "",
+                "database": parsed.path.lstrip("/") if parsed.path else "resume_tracker"
+            }
+    
+    # Fallback to JAWSDB or CLEARDB for MySQL
+    mysql_url = os.getenv("JAWSDB_URL") or os.getenv("CLEARDB_DATABASE_URL")
+    if mysql_url:
+        print("🐬 Using MySQL (JawsDB/ClearDB)")
+        parsed = urlparse(mysql_url)
         return {
+            "type": "mysql",
             "host": parsed.hostname or "localhost",
             "port": parsed.port or 3306,
             "user": parsed.username or "root",
             "password": parsed.password or "",
             "database": parsed.path.lstrip("/") if parsed.path else "resume_tracker"
         }
-    else:
-        # Use individual environment variables
-        return {
-            "host": os.getenv("MYSQL_HOST", "localhost"),
-            "port": int(os.getenv("MYSQL_PORT", "3306")),
-            "user": os.getenv("MYSQL_USER", "root"),
-            "password": os.getenv("MYSQL_PASSWORD", ""),
-            "database": os.getenv("MYSQL_DATABASE", "resume_tracker")
-        }
+    
+    # Default: Use individual environment variables (local MySQL)
+    print("🐬 Using MySQL (Local/Env vars)")
+    return {
+        "type": "mysql",
+        "host": os.getenv("MYSQL_HOST", "localhost"),
+        "port": int(os.getenv("MYSQL_PORT", "3306")),
+        "user": os.getenv("MYSQL_USER", "root"),
+        "password": os.getenv("MYSQL_PASSWORD", ""),
+        "database": os.getenv("MYSQL_DATABASE", "resume_tracker")
+    }
 
-# Get MySQL configuration
+# Get database configuration
 db_config = parse_database_config()
-MYSQL_HOST = db_config["host"]
-MYSQL_PORT = db_config["port"]
-MYSQL_USER = db_config["user"]
-MYSQL_PASSWORD = db_config["password"]
-MYSQL_DATABASE = db_config["database"]
+DB_TYPE = db_config.get("type", "mysql")
+
+# Setup based on database type
+if DB_TYPE == "postgresql":
+    # PostgreSQL imports
+    try:
+        import psycopg2
+        from psycopg2 import pool, extras
+        print("✅ PostgreSQL driver loaded")
+    except ImportError:
+        print("❌ psycopg2 not installed! Run: pip install psycopg2-binary")
+        DB_TYPE = "mysql"  # Fallback to MySQL
+    
+    DATABASE_URL = db_config.get("url")
+else:
+    # MySQL configuration
+    MYSQL_HOST = db_config["host"]
+    MYSQL_PORT = db_config["port"]
+    MYSQL_USER = db_config["user"]
+    MYSQL_PASSWORD = db_config["password"]
+    MYSQL_DATABASE = db_config["database"]
 
 # Connection pool for better performance
 connection_pool = None
 
 def init_connection_pool():
-    """Initialize MySQL connection pool."""
+    """Initialize database connection pool (PostgreSQL or MySQL)."""
     global connection_pool
     if connection_pool is None:
         try:
-            connection_pool = pooling.MySQLConnectionPool(
-                pool_name="resume_pool",
-                pool_size=5,
-                pool_reset_session=True,
-                host=MYSQL_HOST,
-                port=MYSQL_PORT,
-                user=MYSQL_USER,
-                password=MYSQL_PASSWORD,
-                database=MYSQL_DATABASE,
-                autocommit=False
-            )
-        except mysql.connector.Error as err:
-            print(f"Error creating connection pool: {err}")
+            if DB_TYPE == "postgresql":
+                # Fix Heroku postgres:// to postgresql://
+                db_url = DATABASE_URL
+                if db_url.startswith("postgres://"):
+                    db_url = db_url.replace("postgres://", "postgresql://", 1)
+                
+                connection_pool = psycopg2.pool.SimpleConnectionPool(
+                    1,  # minconn
+                    10,  # maxconn
+                    db_url
+                )
+                print("✅ PostgreSQL connection pool created")
+            else:
+                # MySQL connection pool
+                connection_pool = pooling.MySQLConnectionPool(
+                    pool_name="resume_pool",
+                    pool_size=5,
+                    pool_reset_session=True,
+                    host=MYSQL_HOST,
+                    port=MYSQL_PORT,
+                    user=MYSQL_USER,
+                    password=MYSQL_PASSWORD,
+                    database=MYSQL_DATABASE,
+                    autocommit=False
+                )
+                print("✅ MySQL connection pool created")
+        except Exception as err:
+            print(f"❌ Error creating connection pool: {err}")
             raise
 
 def get_db_connection():
@@ -73,117 +135,218 @@ def get_db_connection():
     if connection_pool is None:
         init_connection_pool()
     try:
-        return connection_pool.get_connection()
-    except mysql.connector.Error as err:
-        print(f"Error getting connection from pool: {err}")
+        if DB_TYPE == "postgresql":
+            return connection_pool.getconn()
+        else:
+            return connection_pool.get_connection()
+    except Exception as err:
+        print(f"❌ Error getting connection from pool: {err}")
         raise
 
+def return_connection(conn):
+    """Return a connection to the pool (PostgreSQL only)."""
+    global connection_pool
+    if DB_TYPE == "postgresql" and connection_pool and conn:
+        connection_pool.putconn(conn)
+
 def init_mysql_db():
-    """Initialize MySQL database and create tables."""
-    # First, create database if it doesn't exist
-    try:
-        conn = mysql.connector.connect(
-            host=MYSQL_HOST,
-            port=MYSQL_PORT,
-            user=MYSQL_USER,
-            password=MYSQL_PASSWORD
-        )
+    """Initialize database and create tables (supports both PostgreSQL and MySQL)."""
+    
+    if DB_TYPE == "postgresql":
+        # PostgreSQL initialization
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DATABASE}")
-        cursor.close()
-        conn.close()
-    except mysql.connector.Error as err:
-        print(f"Error creating database: {err}")
-        raise
+        
+        try:
+            # Users table - PostgreSQL version
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username VARCHAR(255) UNIQUE,
+                    password_hash VARCHAR(255),
+                    email VARCHAR(255) UNIQUE,
+                    google_id VARCHAR(255) UNIQUE,
+                    full_name VARCHAR(255),
+                    profile_picture TEXT,
+                    auth_type VARCHAR(20) DEFAULT 'traditional',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_login TIMESTAMP NULL
+                )
+            ''')
+            
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_username ON users(username)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_email ON users(email)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_id ON users(google_id)')
+            
+            # User settings table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    settings TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # User resumes
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_resumes (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    filename VARCHAR(500),
+                    resume_hash VARCHAR(64) NOT NULL,
+                    resume_text TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (user_id, resume_hash)
+                )
+            ''')
+            
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_created ON user_resumes(user_id, created_at)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_hash ON user_resumes(user_id, resume_hash)')
+            
+            # Analysis cache
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_analysis (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    resume_hash VARCHAR(64) NOT NULL,
+                    jd_hash VARCHAR(64) NOT NULL,
+                    provider VARCHAR(50),
+                    model VARCHAR(100),
+                    intensity VARCHAR(50),
+                    result_json TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (user_id, resume_hash, jd_hash, provider, model, intensity)
+                )
+            ''')
+            
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_time ON user_analysis(user_id, created_at)')
+            
+            # Legacy resumes
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS resumes (
+                    id SERIAL PRIMARY KEY,
+                    filename VARCHAR(500) NOT NULL UNIQUE,
+                    resume_text TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            conn.commit()
+            print("✅ PostgreSQL database initialized successfully!")
+            
+        except Exception as err:
+            print(f"❌ Error creating PostgreSQL tables: {err}")
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+            return_connection(conn)
     
-    # Now create tables
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    try:
-        # Users table - Updated to support both traditional and Google OAuth
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                username VARCHAR(255) UNIQUE,
-                password_hash VARCHAR(255),
-                email VARCHAR(255) UNIQUE,
-                google_id VARCHAR(255) UNIQUE,
-                full_name VARCHAR(255),
-                profile_picture TEXT,
-                auth_type ENUM('traditional', 'google') DEFAULT 'traditional',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_login TIMESTAMP NULL,
-                INDEX idx_username (username),
-                INDEX idx_email (email),
-                INDEX idx_google_id (google_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ''')
+    else:
+        # MySQL initialization
+        try:
+            conn = mysql.connector.connect(
+                host=MYSQL_HOST,
+                port=MYSQL_PORT,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD
+            )
+            cursor = conn.cursor()
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DATABASE}")
+            cursor.close()
+            conn.close()
+        except mysql.connector.Error as err:
+            print(f"Error creating MySQL database: {err}")
+            # Don't raise - database might already exist
         
-        # User settings table (JSON string)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_settings (
-                user_id INT PRIMARY KEY,
-                settings TEXT NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ''')
+        # Now create tables
+        conn = get_db_connection()
+        cursor = conn.cursor()
         
-        # User-specific resumes
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_resumes (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                filename VARCHAR(500),
-                resume_hash VARCHAR(64) NOT NULL,
-                resume_text LONGTEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY unique_user_hash (user_id, resume_hash),
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-                INDEX idx_user_created (user_id, created_at),
-                INDEX idx_user_hash (user_id, resume_hash)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ''')
-        
-        # Cache for full analysis results
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_analysis (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                resume_hash VARCHAR(64) NOT NULL,
-                jd_hash VARCHAR(64) NOT NULL,
-                provider VARCHAR(50),
-                model VARCHAR(100),
-                intensity VARCHAR(50),
-                result_json LONGTEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY unique_analysis (user_id, resume_hash, jd_hash, provider, model, intensity),
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-                INDEX idx_user_time (user_id, created_at)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ''')
-        
-        # Legacy resumes table (optional - for backward compatibility)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS resumes (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                filename VARCHAR(500) NOT NULL UNIQUE,
-                resume_text LONGTEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        ''')
-        
-        conn.commit()
-        print("MySQL database initialized successfully!")
-        
-    except mysql.connector.Error as err:
-        print(f"Error creating tables: {err}")
-        conn.rollback()
-        raise
-    finally:
-        cursor.close()
-        conn.close()
+        try:
+            # Users table - MySQL version
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    username VARCHAR(255) UNIQUE,
+                    password_hash VARCHAR(255),
+                    email VARCHAR(255) UNIQUE,
+                    google_id VARCHAR(255) UNIQUE,
+                    full_name VARCHAR(255),
+                    profile_picture TEXT,
+                    auth_type ENUM('traditional', 'google') DEFAULT 'traditional',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_login TIMESTAMP NULL,
+                    INDEX idx_username (username),
+                    INDEX idx_email (email),
+                    INDEX idx_google_id (google_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ''')
+            
+            # User settings table (JSON string)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id INT PRIMARY KEY,
+                    settings TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ''')
+            
+            # User-specific resumes
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_resumes (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    filename VARCHAR(500),
+                    resume_hash VARCHAR(64) NOT NULL,
+                    resume_text LONGTEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY unique_user_hash (user_id, resume_hash),
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    INDEX idx_user_created (user_id, created_at),
+                    INDEX idx_user_hash (user_id, resume_hash)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ''')
+            
+            # Cache for full analysis results
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_analysis (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    resume_hash VARCHAR(64) NOT NULL,
+                    jd_hash VARCHAR(64) NOT NULL,
+                    provider VARCHAR(50),
+                    model VARCHAR(100),
+                    intensity VARCHAR(50),
+                    result_json LONGTEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY unique_analysis (user_id, resume_hash, jd_hash, provider, model, intensity),
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    INDEX idx_user_time (user_id, created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ''')
+            
+            # Legacy resumes table (optional - for backward compatibility)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS resumes (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    filename VARCHAR(500) NOT NULL UNIQUE,
+                    resume_text LONGTEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            ''')
+            
+            conn.commit()
+            print("✅ MySQL database initialized successfully!")
+            
+        except mysql.connector.Error as err:
+            print(f"❌ Error creating MySQL tables: {err}")
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+            conn.close()
 
 
 # --- User Auth Functions ---
