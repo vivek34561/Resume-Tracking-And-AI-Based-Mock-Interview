@@ -3,6 +3,7 @@ import os
 import json
 from typing import List, Tuple, Dict, Callable, Optional
 from database import get_user_resumes
+from utils.visualizations import display_enhanced_visualizations
 
 def setup_page():
     """Set up the page layout and styles"""
@@ -323,108 +324,442 @@ def resume_upload_section():
     return None
 
 def display_analysis_results(analysis_result: Dict):
-    """Display the resume analysis results"""
-    st.subheader("Analysis Results")
+    """Display the resume analysis results in a structured and beautiful manner"""
     
-    # Overall score
+    # ============================================================
+    # SECTION 1: HEADER & OVERVIEW
+    # ============================================================
+    st.markdown("""
+    <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; margin-bottom: 30px;'>
+        <h1 style='color: white; margin: 0;'>📊 Resume Analysis Report</h1>
+        <p style='color: white; margin: 10px 0 0 0; opacity: 0.9;'>Comprehensive AI-powered evaluation of your resume</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ============================================================
+    # SECTION 2: KEY METRICS DASHBOARD
+    # ============================================================
+    st.markdown("## 📈 Key Performance Indicators")
+    
     score = analysis_result.get("overall_score", 0)
-    score_color = "green" if score >= 75 else "orange" if score >= 50 else "red"
     
-    st.metric("Overall Match Score", f"{score}%", help="How well your resume matches the target role requirements")
-    st.progress(score / 100)
+    # Create 4-column metrics dashboard
+    col1, col2, col3, col4 = st.columns(4)
     
-    # Application Status based on score
+    with col1:
+        st.metric(
+            label="🎯 Overall Score",
+            value=f"{score}%",
+            delta=f"{score - 70}% from avg" if score >= 70 else f"{score - 70}% below avg",
+            help="Your overall match score compared to job requirements"
+        )
+    
+    with col2:
+        matching_skills = len(analysis_result.get("strengths", []))
+        st.metric(
+            label="✅ Matching Skills",
+            value=matching_skills,
+            help="Number of skills that match the job requirements"
+        )
+    
+    with col3:
+        missing_skills = len(analysis_result.get("missing_skills", []))
+        st.metric(
+            label="⚠️ Missing Skills",
+            value=missing_skills,
+            delta=f"-{missing_skills}" if missing_skills > 0 else "Perfect!",
+            delta_color="inverse",
+            help="Skills you need to develop or highlight better"
+        )
+    
+    with col4:
+        avg_skill_score = sum(analysis_result.get("skill_scores", {}).values()) / max(len(analysis_result.get("skill_scores", {})), 1)
+        st.metric(
+            label="📊 Avg Skill Level",
+            value=f"{avg_skill_score:.1f}/10",
+            help="Average proficiency across all evaluated skills"
+        )
+    
     st.markdown("---")
+    
+    # ============================================================
+    # SECTION 3: INTERACTIVE VISUALIZATIONS
+    # ============================================================
+    st.markdown("## 📊 Visual Analytics")
+    
+    tab1, tab2, tab3 = st.tabs(["📈 Score Overview", "🎯 Skill Analysis", "📉 Gap Analysis"])
+    
+    with tab1:
+        st.markdown("### Overall Performance Gauge")
+        col_gauge1, col_gauge2 = st.columns([2, 1])
+        
+        with col_gauge1:
+            # Create gauge chart for overall score
+            import plotly.graph_objects as go
+            
+            fig = go.Figure(go.Indicator(
+                mode = "gauge+number+delta",
+                value = score,
+                domain = {'x': [0, 1], 'y': [0, 1]},
+                title = {'text': "Resume Match Score", 'font': {'size': 24}},
+                delta = {'reference': 70, 'increasing': {'color': "green"}},
+                gauge = {
+                    'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
+                    'bar': {'color': "darkblue"},
+                    'bgcolor': "white",
+                    'borderwidth': 2,
+                    'bordercolor': "gray",
+                    'steps': [
+                        {'range': [0, 50], 'color': '#ffcdd2'},
+                        {'range': [50, 70], 'color': '#fff9c4'},
+                        {'range': [70, 85], 'color': '#c8e6c9'},
+                        {'range': [85, 100], 'color': '#81c784'}
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': 70
+                    }
+                }
+            ))
+            
+            fig.update_layout(
+                height=300,
+                margin=dict(l=20, r=20, t=50, b=20),
+                paper_bgcolor="rgba(0,0,0,0)",
+                font={'color': "darkblue", 'family': "Arial"}
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col_gauge2:
+            st.markdown("### Score Breakdown")
+            if score >= 85:
+                st.success("🌟 **Excellent Match**")
+                st.write("• Top-tier candidate")
+                st.write("• Exceeds requirements")
+                st.write("• High interview chance")
+            elif score >= 70:
+                st.success("✅ **Strong Match**")
+                st.write("• Well-qualified")
+                st.write("• Meets requirements")
+                st.write("• Good interview chance")
+            elif score >= 50:
+                st.info("📋 **Fair Match**")
+                st.write("• Meets minimum")
+                st.write("• Some improvements needed")
+                st.write("• Moderate interview chance")
+            else:
+                st.warning("⚠️ **Needs Improvement**")
+                st.write("• Below requirements")
+                st.write("• Significant gaps")
+                st.write("• Consider upskilling")
+    
+    with tab2:
+        st.markdown("### Skill Proficiency Analysis")
+        
+        skill_scores = analysis_result.get("skill_scores", {})
+        if skill_scores:
+            # Create horizontal bar chart for skills
+            import plotly.express as px
+            import pandas as pd
+            
+            # Prepare data
+            skills_df = pd.DataFrame([
+                {"Skill": skill, "Score": score, "Category": "Strong" if score >= 7 else "Moderate" if score >= 4 else "Weak"}
+                for skill, score in sorted(skill_scores.items(), key=lambda x: x[1], reverse=True)
+            ])
+            
+            fig = px.bar(
+                skills_df,
+                y="Skill",
+                x="Score",
+                color="Category",
+                orientation='h',
+                title="Skill Proficiency Levels",
+                labels={"Score": "Proficiency Score (0-10)"},
+                color_discrete_map={"Strong": "#4CAF50", "Moderate": "#FF9800", "Weak": "#F44336"},
+                height=max(400, len(skills_df) * 30)
+            )
+            
+            fig.update_layout(
+                xaxis=dict(range=[0, 10]),
+                yaxis={'categoryorder':'total ascending'},
+                showlegend=True,
+                hovermode='y'
+            )
+            
+            fig.update_traces(
+                texttemplate='%{x:.1f}',
+                textposition='outside'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Skill distribution pie chart
+            col_pie1, col_pie2 = st.columns(2)
+            
+            with col_pie1:
+                category_counts = skills_df['Category'].value_counts()
+                fig_pie = px.pie(
+                    values=category_counts.values,
+                    names=category_counts.index,
+                    title="Skill Distribution",
+                    color=category_counts.index,
+                    color_discrete_map={"Strong": "#4CAF50", "Moderate": "#FF9800", "Weak": "#F44336"}
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+            with col_pie2:
+                st.markdown("### 📊 Statistics")
+                strong_skills = len(skills_df[skills_df['Category'] == 'Strong'])
+                moderate_skills = len(skills_df[skills_df['Category'] == 'Moderate'])
+                weak_skills = len(skills_df[skills_df['Category'] == 'Weak'])
+                
+                st.metric("💪 Strong Skills", strong_skills, f"{strong_skills/len(skills_df)*100:.0f}%")
+                st.metric("📈 Moderate Skills", moderate_skills, f"{moderate_skills/len(skills_df)*100:.0f}%")
+                st.metric("⚠️ Weak Skills", weak_skills, f"{weak_skills/len(skills_df)*100:.0f}%")
+        else:
+            st.info("No detailed skill scores available")
+    
+    with tab3:
+        st.markdown("### Skills Gap Analysis")
+        
+        col_gap1, col_gap2 = st.columns(2)
+        
+        with col_gap1:
+            st.markdown("#### ✅ **Your Strengths**")
+            strengths = analysis_result.get("strengths", [])
+            if strengths:
+                for i, strength in enumerate(strengths, 1):
+                    st.markdown(f"""
+                    <div style='padding: 10px; margin: 5px 0; background-color: #e8f5e9; border-left: 4px solid #4CAF50; border-radius: 5px;'>
+                        <b>{i}.</b> {strength}
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No specific strengths identified")
+        
+        with col_gap2:
+            st.markdown("#### ⚠️ **Areas for Improvement**")
+            missing_skills = analysis_result.get("missing_skills", [])
+            if missing_skills:
+                for i, skill in enumerate(missing_skills, 1):
+                    st.markdown(f"""
+                    <div style='padding: 10px; margin: 5px 0; background-color: #fff3e0; border-left: 4px solid #FF9800; border-radius: 5px;'>
+                        <b>{i}.</b> {skill}
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.success("✅ No major skill gaps identified!")
+    
+    st.markdown("---")
+    
+    # ============================================================
+    # SECTION 4: APPLICATION RECOMMENDATION
+    # ============================================================
+    st.markdown("## 🎯 Application Recommendation")
+    
     if score >= 80:
         st.success(f"""
         ### ✅ **Highly Qualified - Strong Match!**
         
         **Recommendation:** You are an excellent candidate for this role.
-        - Your profile strongly aligns with the job requirements
-        - You exceed most of the required qualifications
-        - **Apply with confidence!** You have a high chance of success
-        - Highlight your top matching skills in your application
+        
+        **Why you should apply:**
+        - 🌟 Your profile strongly aligns with the job requirements
+        - 💪 You exceed most of the required qualifications
+        - 🎯 You have a high chance of success
+        
+        **Next Steps:**
+        1. ✍️ Apply with confidence!
+        2. 📝 Highlight your top matching skills in your application
+        3. 💼 Prepare for interviews by reviewing the job requirements
+        4. 🚀 Showcase your achievements related to the role
         """)
     elif score >= 70:
         st.success(f"""
         ### ✅ **Well Qualified - Good Match**
         
         **Recommendation:** You are a strong candidate for this position.
-        - Your qualifications align well with most requirements
-        - You meet the core competencies for this role
-        - **You should apply!** Good chance of getting shortlisted
-        - Emphasize your relevant experience and skills
+        
+        **Why you should apply:**
+        - ✅ Your qualifications align well with most requirements
+        - 📊 You meet the core competencies for this role
+        - 🎯 Good chance of getting shortlisted
+        
+        **Next Steps:**
+        1. 📤 Submit your application soon
+        2. 📝 Emphasize your relevant experience and skills
+        3. 💡 Address any minor gaps in your cover letter
+        4. 🎓 Consider quick upskilling in weak areas
         """)
     elif score >= 50:
         st.info(f"""
         ### 📋 **Qualified - You Can Apply**
         
         **Recommendation:** You meet the minimum requirements.
-        - You satisfy the basic qualifications for this role
-        - Review the "Areas for Improvement" section below
-        - **You can apply**, but consider:
-          - Tailoring your resume to highlight relevant skills
-          - Addressing skill gaps mentioned below
-          - Showcasing transferable skills and achievements
-        - 💪 Work on improving the missing skills to strengthen your application
+        
+        **Current Status:**
+        - ✅ You satisfy the basic qualifications for this role
+        - ⚠️ Some skill gaps exist (see Areas for Improvement)
+        - 📊 Moderate competition expected
+        
+        **Before Applying:**
+        1. 📝 Tailor your resume to highlight relevant skills
+        2. 💪 Address skill gaps mentioned in Gap Analysis
+        3. 🔍 Showcase transferable skills and achievements
+        4. 📚 Consider quick online courses for missing skills
+        
+        **You can still apply!** Many employers value potential and willingness to learn.
         """)
     else:
         st.warning(f"""
         ### ⚠️ **Below Threshold - Consider Upskilling**
         
         **Recommendation:** Your profile needs improvement for this specific role.
-        -  Significant skill gaps exist between your profile and job requirements
-        -  **Consider upskilling** in the areas mentioned below before applying
-        -  You may want to:
-          - Take relevant courses or certifications
-          - Gain practical experience in missing skills
-          - Look for entry-level or related positions first
-        - 💡 Focus on the "Areas for Improvement" to increase your chances
+        
+        **Current Gaps:**
+        - 📉 Significant skill gaps exist between your profile and job requirements
+        - 🎓 Additional training or experience recommended
+        - ⏰ May need 3-6 months of preparation
+        
+        **Suggested Action Plan:**
+        1. 📚 Take relevant courses or certifications
+        2. 💻 Gain practical experience through projects
+        3. 🔍 Look for entry-level or related positions first
+        4. 🎯 Focus on the skills listed in "Areas for Improvement"
+        5. 🤝 Seek mentorship or internships in the field
+        
+        **Don't give up!** Use this as a roadmap for your professional development.
         """)
+    
     st.markdown("---")
     
-    # Strengths and weaknesses
-    col1, col2 = st.columns(2)
+    # ============================================================
+    # SECTION 5: DETAILED SKILL BREAKDOWN
+    # ============================================================
+    st.markdown("## 🔍 Detailed Skill Assessment")
     
-    with col1:
-        st.subheader("✅ Strengths")
-        if analysis_result.get("strengths"):
-            for strength in analysis_result.get("strengths", []):
-                st.markdown(f"- {strength}")
-        else:
-            st.info("No notable strengths identified")
-    
-    with col2:
-        st.subheader("⚠️ Areas for Improvement")
-        if analysis_result.get("missing_skills"):
-            for skill in analysis_result.get("missing_skills", []):
-                st.markdown(f"- {skill}")
-        else:
-            st.info("No major improvement areas identified")
-    
-    # Detailed skill scores
-    st.subheader("Detailed Skill Analysis")
     if analysis_result.get("skill_scores"):
+        # Group skills by score range
+        excellent_skills = []
+        good_skills = []
+        moderate_skills = []
+        weak_skills = []
+        
         for skill, score in analysis_result.get("skill_scores", {}).items():
-            reasoning = analysis_result.get("skill_reasoning", {}).get(skill, "")
+            reasoning = analysis_result.get("skill_reasoning", {}).get(skill, "No detailed assessment available")
             
-            if score >= 7:
-                score_class = "good-score"
-                emoji = "✅"
+            skill_data = {
+                "name": skill,
+                "score": score,
+                "reasoning": reasoning
+            }
+            
+            if score >= 8:
+                excellent_skills.append(skill_data)
+            elif score >= 6:
+                good_skills.append(skill_data)
             elif score >= 4:
-                score_class = "medium-score"
-                emoji = "⚠️"
+                moderate_skills.append(skill_data)
             else:
-                score_class = "low-score"
-                emoji = "❌"
-            
-            with st.expander(f"{emoji} {skill} - Score: {score}/10"):
-                st.markdown(f"**Assessment:** {reasoning}")
-                st.markdown(f"""<div class="skill-score {score_class}">
-                    Score: {score}/10 - {get_score_description(score)}
-                </div>""", unsafe_allow_html=True)
+                weak_skills.append(skill_data)
+        
+        # Display skills by category
+        if excellent_skills:
+            with st.expander(f"⭐ **Excellent Skills** ({len(excellent_skills)} skills) - Score 8-10", expanded=True):
+                for skill in excellent_skills:
+                    st.markdown(f"""
+                    <div style='background-color: #e8f5e9; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 5px solid #4CAF50;'>
+                        <h4 style='margin: 0; color: #2e7d32;'>✅ {skill['name']} - {skill['score']}/10</h4>
+                        <p style='margin: 10px 0 0 0; color: #555;'><b>Assessment:</b> {skill['reasoning']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        if good_skills:
+            with st.expander(f"✅ **Good Skills** ({len(good_skills)} skills) - Score 6-7", expanded=False):
+                for skill in good_skills:
+                    st.markdown(f"""
+                    <div style='background-color: #f1f8e9; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 5px solid #8BC34A;'>
+                        <h4 style='margin: 0; color: #558b2f;'>👍 {skill['name']} - {skill['score']}/10</h4>
+                        <p style='margin: 10px 0 0 0; color: #555;'><b>Assessment:</b> {skill['reasoning']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        if moderate_skills:
+            with st.expander(f"⚠️ **Moderate Skills** ({len(moderate_skills)} skills) - Score 4-5", expanded=False):
+                for skill in moderate_skills:
+                    st.markdown(f"""
+                    <div style='background-color: #fff9c4; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 5px solid #FFC107;'>
+                        <h4 style='margin: 0; color: #f57f17;'>📊 {skill['name']} - {skill['score']}/10</h4>
+                        <p style='margin: 10px 0 0 0; color: #555;'><b>Assessment:</b> {skill['reasoning']}</p>
+                        <p style='margin: 5px 0 0 0; color: #e65100;'><b>💡 Recommendation:</b> Consider strengthening this skill through practice or courses.</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        if weak_skills:
+            with st.expander(f"❌ **Weak Skills** ({len(weak_skills)} skills) - Score 0-3", expanded=False):
+                for skill in weak_skills:
+                    st.markdown(f"""
+                    <div style='background-color: #ffebee; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 5px solid #F44336;'>
+                        <h4 style='margin: 0; color: #c62828;'>⚠️ {skill['name']} - {skill['score']}/10</h4>
+                        <p style='margin: 10px 0 0 0; color: #555;'><b>Assessment:</b> {skill['reasoning']}</p>
+                        <p style='margin: 5px 0 0 0; color: #b71c1c;'><b>🎯 Priority Action:</b> This skill needs significant improvement. Consider focused learning or practical projects.</p>
+                    </div>
+                    """, unsafe_allow_html=True)
     else:
-        st.info("No detailed skill analysis available")
+        st.info("No detailed skill breakdown available")
+    
+    st.markdown("---")
+    
+    # ============================================================
+    # SECTION 6: QUICK ACTION ITEMS
+    # ============================================================
+    st.markdown("## ✅ Quick Action Items")
+    
+    col_action1, col_action2, col_action3 = st.columns(3)
+    
+    with col_action1:
+        st.markdown("""
+        <div style='background-color: #e3f2fd; padding: 20px; border-radius: 10px; height: 100%;'>
+            <h3 style='color: #1976d2;'>📝 Immediate</h3>
+            <ul style='color: #555;'>
+                <li>Update resume with keywords</li>
+                <li>Tailor cover letter</li>
+                <li>Prepare for interviews</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_action2:
+        st.markdown("""
+        <div style='background-color: #fff3e0; padding: 20px; border-radius: 10px; height: 100%;'>
+            <h3 style='color: #f57c00;'>📚 Short-term (1-2 weeks)</h3>
+            <ul style='color: #555;'>
+                <li>Take online courses</li>
+                <li>Build sample projects</li>
+                <li>Update LinkedIn profile</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col_action3:
+        st.markdown("""
+        <div style='background-color: #f3e5f5; padding: 20px; border-radius: 10px; height: 100%;'>
+            <h3 style='color: #7b1fa2;'>🎯 Long-term (1-3 months)</h3>
+            <ul style='color: #555;'>
+                <li>Get certifications</li>
+                <li>Gain work experience</li>
+                <li>Network in industry</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Final note
+    st.info("💡 **Pro Tip:** Use the Resume Chatbot below to ask specific questions about how to improve your resume!")
 
 def get_score_description(score: int) -> str:
     """Get descriptive text for a skill score"""
