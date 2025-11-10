@@ -54,10 +54,38 @@ def setup_sidebar() -> Dict:
         # Logged-in user info and logout
         _user = st.session_state.get('user')
         if _user:
-            st.markdown(f"Logged in as: **{_user.get('username','')}**")
-            if st.button("Logout"):
+            # Display user info with profile picture if available
+            if _user.get('picture'):
+                col_img, col_txt = st.columns([1, 3])
+                with col_img:
+                    st.image(_user['picture'], width=50)
+                with col_txt:
+                    st.markdown(f"**{_user.get('name') or _user.get('username','')}**")
+                    if _user.get('email'):
+                        st.caption(_user['email'])
+            else:
+                st.markdown(f"👤 **{_user.get('name') or _user.get('username','')}**")
+                if _user.get('email'):
+                    st.caption(_user['email'])
+            
+            # Logout button
+            if st.button("🚪 Logout", use_container_width=True):
+                # Check if user is using Google auth
+                if st.session_state.get('connected'):
+                    try:
+                        from auth import init_google_auth
+                        authenticator = init_google_auth()
+                        authenticator.logout()
+                    except Exception as e:
+                        st.warning(f"Google logout issue: {e}")
+                
+                # Clear session state
                 st.session_state.user = None
                 st.session_state.user_settings = {}
+                if 'connected' in st.session_state:
+                    del st.session_state.connected
+                if 'user_info' in st.session_state:
+                    del st.session_state.user_info
                 st.rerun()
         # Settings from user profile
         _user_settings = st.session_state.get('user_settings') or {}

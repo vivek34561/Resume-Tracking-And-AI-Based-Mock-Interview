@@ -101,14 +101,22 @@ def init_mysql_db():
     cursor = conn.cursor()
     
     try:
-        # Users table
+        # Users table - Updated to support both traditional and Google OAuth
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
-                username VARCHAR(255) NOT NULL UNIQUE,
-                password_hash VARCHAR(255) NOT NULL,
+                username VARCHAR(255) UNIQUE,
+                password_hash VARCHAR(255),
+                email VARCHAR(255) UNIQUE,
+                google_id VARCHAR(255) UNIQUE,
+                full_name VARCHAR(255),
+                profile_picture TEXT,
+                auth_type ENUM('traditional', 'google') DEFAULT 'traditional',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_username (username)
+                last_login TIMESTAMP NULL,
+                INDEX idx_username (username),
+                INDEX idx_email (email),
+                INDEX idx_google_id (google_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         ''')
         
@@ -222,6 +230,126 @@ def get_user_by_username(username: str):
     finally:
         cursor.close()
         conn.close()
+
+
+# --- Google OAuth Functions ---
+def create_or_update_google_user(email: str, google_id: str, name: str = None, picture: str = None):
+    """
+    Create a new user from Google OAuth or update existing user.
+    Returns user dict with id, email, name, etc.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        # Check if user with this google_id already exists
+        cursor.execute("SELECT * FROM users WHERE google_id = %s", (google_id,))
+        user = cursor.fetchone()
+        
+        if user:
+            # Update last login and profile info
+            cursor.execute("""
+                UPDATE users 
+                SET last_login = CURRENT_TIMESTAMP,
+                    full_name = %s,
+                    profile_picture = %s
+                WHERE google_id = %s
+            """, (name, picture, google_id))
+            conn.commit()
+            # Fetch updated user
+            cursor.execute("SELECT * FROM users WHERE google_id = %s", (google_id,))
+            user = cursor.fetchone()
+        else:
+            # Check if email already exists (maybe from traditional auth)
+            cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Link Google account to existing user
+                cursor.execute("""
+                    UPDATE users 
+                    SET google_id = %s,
+                        auth_type = 'google',
+                        full_name = %s,
+                        profile_picture = %s,
+                        last_login = CURRENT_TIMESTAMP
+                    WHERE email = %s
+                """, (google_id, name, picture, email))
+                conn.commit()
+                cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+                user = cursor.fetchone()
+            else:
+                # Create new user
+                cursor.execute("""
+                    INSERT INTO users (email, google_id, full_name, profile_picture, auth_type, last_login)
+                    VALUES (%s, %s, %s, %s, 'google', CURRENT_TIMESTAMP)
+                """, (email, google_id, name, picture))
+                conn.commit()
+                user_id = cursor.lastrowid
+                cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+                user = cursor.fetchone()
+        
+        return {
+            "id": user['id'],
+            "username": user.get('username') or user['email'].split('@')[0],
+            "email": user['email'],
+            "name": user.get('full_name'),
+            "picture": user.get('profile_picture'),
+            "google_id": user['google_id'],
+            "auth_type": user['auth_type']
+        }
+    except mysql.connector.Error as e:
+        conn.rollback()
+        print(f"Error creating/updating Google user: {e}")
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_user_by_google_id(google_id: str):
+    """Get user by Google ID."""
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT * FROM users WHERE google_id = %s", (google_id,))
+        user = cursor.fetchone()
+        if user:
+            return {
+                "id": user['id'],
+                "username": user.get('username') or user['email'].split('@')[0],
+                "email": user['email'],
+                "name": user.get('full_name'),
+                "picture": user.get('profile_picture'),
+                "google_id": user['google_id'],
+                "auth_type": user['auth_type']
+            }
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_user_by_email(email: str):
+    """Get user by email."""
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
+        if user:
+            return {
+                "id": user['id'],
+                "username": user.get('username') or user['email'].split('@')[0],
+                "email": user['email'],
+                "name": user.get('full_name'),
+                "picture": user.get('profile_picture'),
+                "auth_type": user.get('auth_type')
+            }
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+
 
 def get_user_settings(user_id: int) -> dict:
     conn = get_db_connection()

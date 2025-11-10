@@ -19,7 +19,11 @@ from database import (
     save_user_settings,
     save_user_resume,
     get_user_resume_by_id,
+    create_or_update_google_user,
+    get_user_by_google_id,
+    get_user_by_email,
 )
+from auth import init_google_auth, get_google_user_info, google_login_button, google_logout
 import atexit
 import os
 import io
@@ -352,36 +356,79 @@ def process_empty_answer():
     
     
 def login_view() -> bool:
-    st.header("🔐 Sign in to continue")
-    tabs = st.tabs(["Login", "Register"])
-    logged_in = False
-    with tabs[0]:
-        with st.form("login_form"):
-            u = st.text_input("Username", key="login_user")
-            p = st.text_input("Password", type="password", key="login_pass")
-            submit = st.form_submit_button("Login", type="primary")
-        if submit:
-            user = authenticate_user(u, p)
-            if user:
-                st.session_state.user = user
-                st.session_state.user_settings = get_user_settings(user['id']) or {}
-                logged_in = True
-                st.success(f"Welcome back, {user['username']}!")
-                st.rerun()
-            else:
-                st.error("Invalid username or password.")
-    with tabs[1]:
-        with st.form("register_form"):
-            ru = st.text_input("Choose a username", key="reg_user")
-            rp = st.text_input("Choose a password", type="password", key="reg_pass")
-            submit_r = st.form_submit_button("Create account", type="primary")
-        if submit_r:
-            user_id = create_user(ru, rp)
-            if user_id:
-                st.success("Account created. Please log in.")
-            else:
-                st.error("Username already exists or invalid input.")
-    return logged_in or bool(st.session_state.user)
+    """
+    Google OAuth login view - replaces traditional username/password login.
+    """
+    st.header("🔐 Welcome to ResuMate")
+    st.markdown("### Sign in to continue")
+    
+    # Initialize Google authenticator
+    try:
+        authenticator = init_google_auth()
+    except Exception as e:
+        st.error(f"Failed to initialize authentication: {e}")
+        st.info("Please configure Google OAuth credentials. See GOOGLE_AUTH_SETUP.md for instructions.")
+        return False
+    
+    # Create two columns for better layout
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown("---")
+        st.markdown("#### 🚀 Sign in with Google")
+        st.markdown("Continue using your Google account to access ResuMate")
+        st.markdown("---")
+        
+        # Google login button
+        user_info = google_login_button(authenticator)
+        
+        if user_info:
+            # User authenticated with Google
+            google_id = user_info.get('google_id')
+            email = user_info.get('email')
+            name = user_info.get('name')
+            picture = user_info.get('picture')
+            
+            if google_id and email:
+                # Create or update user in database
+                user = create_or_update_google_user(
+                    email=email,
+                    google_id=google_id,
+                    name=name,
+                    picture=picture
+                )
+                
+                if user:
+                    st.session_state.user = user
+                    st.session_state.user_settings = get_user_settings(user['id']) or {}
+                    st.success(f"✅ Welcome, {name or email}!")
+                    st.balloons()
+                    st.rerun()
+                else:
+                    st.error("Failed to create user account. Please try again.")
+        
+        st.markdown("---")
+        st.caption("🔒 Secure OAuth 2.0 authentication via Google")
+        st.caption("We only access your basic profile information (name, email)")
+        
+        # Optional: Keep traditional login as fallback (can be removed if not needed)
+        with st.expander("🔑 Traditional Login (Legacy)", expanded=False):
+            st.warning("⚠️ Traditional login is deprecated. Please use Google Sign-In.")
+            with st.form("login_form"):
+                u = st.text_input("Username", key="login_user")
+                p = st.text_input("Password", type="password", key="login_pass")
+                submit = st.form_submit_button("Login", type="primary")
+            if submit:
+                user = authenticate_user(u, p)
+                if user:
+                    st.session_state.user = user
+                    st.session_state.user_settings = get_user_settings(user['id']) or {}
+                    st.success(f"Welcome back, {user['username']}!")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
+    
+    return bool(st.session_state.user)
 
 
 def ensure_logged_in() -> bool:

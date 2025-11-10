@@ -4,13 +4,65 @@
 
 ## 🌟 Features
 
+- **🔐 Google OAuth Login** - Secure "Continue with Google" authentication
 - **Resume Analysis** - AI-powered analysis with ATS scoring
 - **Smart Chatbot** - Ask questions about your resume with context memory
 - **Interview Preparation** - Generate personalized interview questions
 - **Resume Improvement** - Get AI-driven suggestions and enhanced resume
 - **Cover Letter Generator** - Create tailored cover letters
 - **Job Search** - Search multiple job boards at once
-- **Multi-user Support** - Secure authentication and personal data storage
+- **Multi-user Support** - Personal data storage with Google account integration
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+1. **Google OAuth Credentials** (Required)
+   - See [GOOGLE_AUTH_SETUP.md](GOOGLE_AUTH_SETUP.md) for detailed setup instructions
+   - Get credentials from [Google Cloud Console](https://console.cloud.google.com/)
+
+2. **Groq API Key** (Required for AI features)
+   - Get free API key from [Groq Console](https://console.groq.com/keys)
+   - Watch: [How to Get Groq API Key](https://www.youtube.com/watch?v=nt1PJu47nTk)
+
+3. **MySQL Database** (Required)
+   - Local: MySQL 8.0+
+   - Heroku: ClearDB or JawsDB add-on
+
+### Local Setup
+
+1. Clone the repository:
+   ```powershell
+   git clone https://github.com/vivek34561/Resume-Tracking-And-AI-Based-Mock-Interview.git
+   cd Resume-Tracking-And-AI-Based-Mock-Interview
+   ```
+
+2. Install dependencies:
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+3. Set up environment variables (copy `.env.example` to `.env`):
+   ```powershell
+   cp .env.example .env
+   ```
+   
+4. Configure your `.env` file with:
+   - Google OAuth credentials
+   - Groq API key
+   - MySQL database credentials
+
+5. Set up the database:
+   ```powershell
+   python migrate_google_auth.py
+   ```
+
+6. Run the app:
+   ```powershell
+   streamlit run app.py
+   ```
 
 ---
 
