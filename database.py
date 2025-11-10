@@ -154,8 +154,8 @@ def return_connection(conn):
         if connection_pool:
             connection_pool.putconn(conn)
     else:
-        # MySQL: Actually close the connection (pool handles it)
-        return_connection(conn)
+        # MySQL: Close the connection (pool handles it)
+        conn.close()
 
 def get_cursor(conn):
     """Get a cursor that returns dictionary-like results for both PostgreSQL and MySQL."""
